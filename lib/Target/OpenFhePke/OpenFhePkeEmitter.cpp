@@ -651,12 +651,45 @@ LogicalResult OpenFhePkeEmitter::printOperation(LevelReduceOp op) {
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
-  emitAutoAssignPrefix(op.getResult());
+  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+  auto cipherText = variableNames->getNameForValue(op.getCiphertext());
+  auto shiftVal = op.getIndex().getValue();
 
-  os << variableNames->getNameForValue(op.getCryptoContext()) << "->"
-     << "EvalRotate" << "("
-     << variableNames->getNameForValue(op.getCiphertext()) << ", "
-     << op.getIndex().getValue() << ");\n";
+  os << "{\n";
+  os << "  auto keyTag = " << cipherText << "->GetKeyTag();\n";
+  os << "  auto automorphismIndex = " << contextName
+     << "->FindAutomorphismIndex(" << shiftVal << ");\n";
+  os << "  std::ifstream rotKeyFile(\"rotation_key_\" + std::to_string("
+     << shiftVal << ") + \".bin\", std::ios::binary);\n";
+  os << "  if "
+        "(!CryptoContextImpl<DCRTPoly>::DeserializeEvalAutomorphismKey("
+        "rotKeyFile, SerType::BINARY, keyTag, {automorphismIndex})) {\n";
+  os << "    std::cerr << \"Failed to deserialize rotation key for index "
+     << shiftVal << "\" << std::endl;\n";
+  os << "  }\n";
+  os << "}\n";
+
+  // Emit the rotation operation
+  emitAutoAssignPrefix(op.getResult());
+  os << contextName << "->" << "EvalRotate" << "(" << cipherText << ", "
+     << shiftVal << ");\n\n";
+
+  // Serialize and clear the rotation key after use
+  os << "  // Serialize and clear rotation key after use\n";
+  os << "{\n";
+  os << "  auto keyTag = " << cipherText << "->GetKeyTag();\n";
+  os << "  auto automorphismIndex = " << contextName
+     << "->FindAutomorphismIndex(" << shiftVal << ");\n";
+  os << "  std::ofstream outKeyFile(\"rotation_key_\" + std::to_string("
+     << shiftVal << ") + \".bin\", std::ios::binary);\n";
+  os << "  " << contextName
+     << "->SerializeEvalAutomorphismKey(outKeyFile, SerType::BINARY, keyTag, "
+        "{automorphismIndex});\n";
+  os << "  auto existingKeyMap = " << contextName
+     << "->GetEvalAutomorphismKeyMap(keyTag);\n";
+  os << "  existingKeyMap.erase(automorphismIndex);\n";
+  os << "}\n";
+
   return success();
 }
 
@@ -1438,13 +1471,34 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenRotKeyOp op) {
   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
   auto privateKeyName = variableNames->getNameForValue(op.getPrivateKey());
 
-  std::vector<std::string> rotIndices;
-  llvm::transform(op.getIndices(), std::back_inserter(rotIndices),
-                  [](int64_t value) { return std::to_string(value); });
+  // Generate and serialize rotation keys
+  os << "{\n";
+  os << "  const std::vector<int32_t> rotIndices = {";
+  llvm::interleaveComma(op.getIndices(), os,
+                        [&](int64_t value) { os << value; });
+  os << "};\n\n";
 
-  os << contextName << "->EvalRotateKeyGen(" << privateKeyName << ", {";
-  os << llvm::join(rotIndices, ", ");
-  os << "});\n";
+  // Generate all rotation keys
+  os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
+     << ", rotIndices);\n\n";
+
+  // Serialize rotation keys
+  os << "  auto keyTag = " << privateKeyName << "->GetKeyTag();\n";
+  os << "  for (const auto& rotIndex : rotIndices) {\n";
+  os << "    std::ofstream rotKeyFile(\"rotation_key_\" + "
+        "std::to_string(rotIndex) + \".bin\", std::ios::binary);\n";
+  os << "    auto automorphismIndex = " << contextName
+     << "->FindAutomorphismIndex(rotIndex);\n";
+  os << "    " << contextName
+     << "->SerializeEvalAutomorphismKey(rotKeyFile, SerType::BINARY, keyTag, "
+        "{automorphismIndex});\n";
+  os << "  }\n\n";
+
+  // Clear rotation keys from memory after serialization
+  os << "  // Clear rotation keys from memory since they are now serialized\n";
+  os << "  cc->ClearEvalAutomorphismKeys(keyTag);\n";
+  os << "}\n";
+
   return success();
 }
 
