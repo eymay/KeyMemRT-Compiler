@@ -6,6 +6,7 @@ package(default_applicable_licenses = ["@heir//:license"])
 
 openfhe_end_to_end_test(
     name = "halevi_shoup_matmul_test",
+    additional_hdrs = ["ResourceMonitor.hpp"],
     generated_lib_header = "halevi_shoup_matmul_lib.h",
     heir_opt_flags = [
         "--annotate-module=backend=openfhe scheme=ckks",

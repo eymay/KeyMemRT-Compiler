@@ -4,6 +4,7 @@
 
 #include "gtest/gtest.h"                  // from @googletest
 #include "src/pke/include/key/keypair.h"  // from @openfhe
+#include "tests/Examples/openfhe/ResourceMonitor.hpp"
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/ckks/halevi_shoup_matmul/halevi_shoup_matmul_lib.h"
@@ -13,10 +14,19 @@ namespace heir {
 namespace openfhe {
 
 TEST(NaiveMatmulTest, RunTest) {
-  auto cryptoContext = matmul__generate_crypto_context();
+  // auto cryptoContext = matmul__generate_crypto_context();
+  ResourceMonitor monitor;
+  monitor.start();
+  CCParamsT params;
+  params.SetMultiplicativeDepth(28);
+  CryptoContextT cryptoContext = GenCryptoContext(params);
+  cryptoContext->Enable(PKE);
+  cryptoContext->Enable(KEYSWITCH);
+  cryptoContext->Enable(LEVELEDSHE);
   auto keyPair = cryptoContext->KeyGen();
   auto publicKey = keyPair.publicKey;
   auto secretKey = keyPair.secretKey;
+
   cryptoContext = matmul__configure_crypto_context(cryptoContext, secretKey);
 
   std::vector<float> arg0Vals = {1.0, 0, 0, 0, 0, 0, 0, 0,
@@ -36,6 +46,11 @@ TEST(NaiveMatmulTest, RunTest) {
   double time_elapsed_ms = 1000.0 * (c_end - c_start) / CLOCKS_PER_SEC;
   std::cout << "CPU time used: " << time_elapsed_ms << " ms\n";
 
+  monitor.stop();
+  // Set ROTKEY env variable to a directory in the running environment
+  //  const char* output_dir = getenv("ROTKEY");
+  std::string filename = "./resource_usage_HS_MatMul.csv";
+  monitor.save_to_file(filename);
   auto actual =
       matmul__decrypt__result0(cryptoContext, outputEncrypted, secretKey);
 
