@@ -94,9 +94,26 @@ struct ConvertRotateOp : public OpConversionPattern<RotateOp> {
     if (failed(result)) return result;
 
     Value cryptoContext = result.value();
-    rewriter.replaceOp(op, rewriter.create<OpenfheOp>(
-                               op.getLoc(), cryptoContext, adaptor.getInput(),
-                               adaptor.getOffset()));
+    Location loc = op.getLoc();
+
+    // First serialize the key with the rotation index
+    auto rotIndex = adaptor.getOffset();
+
+    // Create the eval key
+    auto evalKeyType =
+        openfhe::EvalKeyType::get(rewriter.getContext(), rotIndex);
+    Value evalKey = rewriter.create<openfhe::DeserializeKeyOp>(
+        loc, evalKeyType, cryptoContext, rotIndex);
+
+    // Now we have the key, create the rotation op
+    Value rotatedResult =
+        rewriter.create<OpenfheOp>(loc, op.getOutput().getType(), cryptoContext,
+                                   adaptor.getInput(), evalKey);
+
+    // Clear the key after use
+    rewriter.create<openfhe::ClearKeyOp>(loc, cryptoContext, evalKey);
+
+    rewriter.replaceOp(op, rotatedResult);
     return success();
   }
 };
