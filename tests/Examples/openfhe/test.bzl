@@ -3,7 +3,7 @@
 load("@heir//bazel/openfhe:copts.bzl", "MAYBE_OPENFHE_LINKOPTS", "MAYBE_OPENMP_COPTS")
 load("@heir//tools:heir-openfhe.bzl", "openfhe_lib")
 
-def openfhe_end_to_end_test(name, mlir_src, test_src, generated_lib_header, heir_opt_flags = [], heir_translate_flags = [], data = [], tags = [], deps = [], additional_hdrs = [], **kwargs):
+def openfhe_end_to_end_test(name, mlir_src, test_src, generated_lib_header, heir_opt_flags = [], heir_translate_flags = [], data = [], tags = [], deps = [], **kwargs):
     """A rule for running generating OpenFHE and running a test on it.
 
     Args:
@@ -17,11 +17,10 @@ def openfhe_end_to_end_test(name, mlir_src, test_src, generated_lib_header, heir
       data: Data dependencies to be passed to cc_test/heir_opt
       tags: Tags to pass to cc_test
       deps: Deps to pass to cc_test and cc_library
-      additional_hdrs: For custom header inclusions
       **kwargs: Keyword arguments to pass to cc_library and cc_test.
     """
     cc_lib_target_name = "%s_cc_lib" % name
-    openfhe_lib(name, mlir_src, generated_lib_header, cc_lib_target_name, heir_opt_flags, heir_translate_flags, data, tags, deps, **kwargs)
+    openfhe_lib(name, mlir_src, generated_lib_header, cc_lib_target_name, heir_opt_flags, heir_translate_flags, data, tags, deps,["//tests/Examples/openfhe:common_headers"],  **kwargs)
     native.cc_test(
         name = name,
         srcs = [test_src],

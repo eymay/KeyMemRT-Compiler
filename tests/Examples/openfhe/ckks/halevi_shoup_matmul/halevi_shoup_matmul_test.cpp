@@ -21,7 +21,7 @@ TEST(NaiveMatmulTest, RunTest) {
   ResourceMonitor monitor;
   monitor.start();
   CCParamsT params;
-  params.SetMultiplicativeDepth(28);
+  params.SetMultiplicativeDepth(25);
   CryptoContextT cryptoContext = GenCryptoContext(params);
   cryptoContext->Enable(PKE);
   cryptoContext->Enable(KEYSWITCH);
