@@ -9,6 +9,7 @@ namespace openfhe {
 
 constexpr std::string_view kSourceRelativeOpenfheImport = R"cpp(
 #include "src/pke/include/openfhe.h"  // from @openfhe
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
 )cpp";
 constexpr std::string_view kInstallationRelativeOpenfheImport = R"cpp(
 #include "openfhe/pke/openfhe.h"  // from @openfhe
@@ -28,6 +29,8 @@ using EvalKeyT = EvalKey<DCRTPoly>;
 using PlaintextT = Plaintext;
 using PrivateKeyT = PrivateKey<DCRTPoly>;
 using PublicKeyT = PublicKey<DCRTPoly>;
+
+extern KeyMemRT keymem_rt;
 )cpp";
 // clang-format on
 

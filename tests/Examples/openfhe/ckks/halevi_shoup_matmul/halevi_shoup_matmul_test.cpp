@@ -4,7 +4,10 @@
 
 #include "gtest/gtest.h"                  // from @googletest
 #include "src/pke/include/key/keypair.h"  // from @openfhe
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
 #include "tests/Examples/openfhe/ResourceMonitor.hpp"
+
+KeyMemRT keymem_rt;
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/ckks/halevi_shoup_matmul/halevi_shoup_matmul_lib.h"
@@ -27,6 +30,7 @@ TEST(NaiveMatmulTest, RunTest) {
   auto publicKey = keyPair.publicKey;
   auto secretKey = keyPair.secretKey;
 
+  keymem_rt.setKeyMemMode(KeyMemMode::IMPERATIVE);
   cryptoContext = matmul__configure_crypto_context(cryptoContext, secretKey);
 
   std::vector<float> arg0Vals = {1.0, 0, 0, 0, 0, 0, 0, 0,

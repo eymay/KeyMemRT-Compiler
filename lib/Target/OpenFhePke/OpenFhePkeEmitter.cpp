@@ -1467,38 +1467,33 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenMulKeyOp op) {
   return success();
 }
 
+LogicalResult printKeyMemRTConfig(raw_indented_ostream &os, StringRef cc,
+                                  StringRef pk, ArrayRef<int64_t> rotIndices) {
+  os << "keymem_rt.setCryptoContext(" << cc << ");\n";
+  os << "keymem_rt.setKeyTag(" << pk << "->GetKeyTag());\n";
+  os << "keymem_rt.setRotIndices({";
+  llvm::interleaveComma(rotIndices, os, [&](int64_t value) { os << value; });
+  os << "});\n";
+  return success();
+}
+
 LogicalResult OpenFhePkeEmitter::printOperation(GenRotKeyOp op) {
   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
   auto privateKeyName = variableNames->getNameForValue(op.getPrivateKey());
 
-  // Generate and serialize rotation keys
-  os << "{\n";
   os << "  const std::vector<int32_t> rotIndices = {";
   llvm::interleaveComma(op.getIndices(), os,
                         [&](int64_t value) { os << value; });
   os << "};\n\n";
-
-  // Generate all rotation keys
   os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
      << ", rotIndices);\n\n";
-
-  // Serialize rotation keys
-  os << "  auto keyTag = " << privateKeyName << "->GetKeyTag();\n";
-  os << "  for (const auto& rotIndex : rotIndices) {\n";
-  os << "    std::ofstream rotKeyFile(\"rotation_key_\" + "
-        "std::to_string(rotIndex) + \".bin\", std::ios::binary);\n";
-  os << "    auto automorphismIndex = " << contextName
-     << "->FindAutomorphismIndex(rotIndex);\n";
-  os << "    " << contextName
-     << "->SerializeEvalAutomorphismKey(rotKeyFile, SerType::BINARY, keyTag, "
-        "{automorphismIndex});\n";
-  os << "  }\n\n";
-
-  // Clear rotation keys from memory after serialization
-  os << "  // Clear rotation keys from memory since they are now serialized\n";
-  os << "  cc->ClearEvalAutomorphismKeys(keyTag);\n";
+  if (printKeyMemRTConfig(os, contextName, privateKeyName, op.getIndices())
+          .failed())
+    return failure();
+  os << "if (!keymem_rt.serializeAllKeys()) {\n";
+  os << "  std::cerr << \"Failed to serialize rotation keys\" << std::endl;\n";
   os << "}\n";
-
+  os << "keymem_rt.clearAllKeys();\n";
   return success();
 }
 
