@@ -268,9 +268,10 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           // OpenFHE ops
           .Case<AddOp, AddPlainOp, SubOp, SubPlainOp, MulNoRelinOp, MulOp,
                 MulPlainOp, SquareOp, NegateOp, MulConstOp, RelinOp,
-                ModReduceOp, LevelReduceOp, RotOp, AutomorphOp, KeySwitchOp,
-                EncryptOp, DecryptOp, GenParamsOp, GenContextOp, GenMulKeyOp,
-                GenRotKeyOp, GenBootstrapKeyOp, MakePackedPlaintextOp,
+                ModReduceOp, LevelReduceOp, RotOp, DeserializeKeyOp,
+                SerializeKeyOp, ClearKeyOp, AutomorphOp, KeySwitchOp, EncryptOp,
+                DecryptOp, GenParamsOp, GenContextOp, GenMulKeyOp, GenRotKeyOp,
+                GenBootstrapKeyOp, MakePackedPlaintextOp,
                 MakeCKKSPackedPlaintextOp, SetupBootstrapOp, BootstrapOp>(
               [&](auto op) { return printOperation(op); })
           .Default([&](Operation &) {
@@ -651,46 +652,45 @@ LogicalResult OpenFhePkeEmitter::printOperation(LevelReduceOp op) {
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
-  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
-  auto cipherText = variableNames->getNameForValue(op.getCiphertext());
-  auto shiftVal = op.getIndex().getValue();
-
-  os << "{\n";
-  os << "  auto keyTag = " << cipherText << "->GetKeyTag();\n";
-  os << "  auto automorphismIndex = " << contextName
-     << "->FindAutomorphismIndex(" << shiftVal << ");\n";
-  os << "  std::ifstream rotKeyFile(\"rotation_key_\" + std::to_string("
-     << shiftVal << ") + \".bin\", std::ios::binary);\n";
-  os << "  if "
-        "(!CryptoContextImpl<DCRTPoly>::DeserializeEvalAutomorphismKey("
-        "rotKeyFile, SerType::BINARY, keyTag, {automorphismIndex})) {\n";
-  os << "    std::cerr << \"Failed to deserialize rotation key for index "
-     << shiftVal << "\" << std::endl;\n";
-  os << "  }\n";
-  os << "}\n";
-
-  // Emit the rotation operation
   emitAutoAssignPrefix(op.getResult());
-  os << contextName << "->" << "EvalRotate" << "(" << cipherText << ", "
-     << shiftVal << ");\n\n";
+  os << variableNames->getNameForValue(op.getCryptoContext()) << "->EvalRotate("
+     << variableNames->getNameForValue(op.getCiphertext()) << ", "
+     << op.getEvalKey().getType().getRotationIndex().getInt() << ");\n";
+  return success();
+}
 
-  // Serialize and clear the rotation key after use
-  os << "  // Serialize and clear rotation key after use\n";
-  os << "{\n";
-  os << "  auto keyTag = " << cipherText << "->GetKeyTag();\n";
-  os << "  auto automorphismIndex = " << contextName
-     << "->FindAutomorphismIndex(" << shiftVal << ");\n";
-  os << "  std::ofstream outKeyFile(\"rotation_key_\" + std::to_string("
-     << shiftVal << ") + \".bin\", std::ios::binary);\n";
-  os << "  " << contextName
-     << "->SerializeEvalAutomorphismKey(outKeyFile, SerType::BINARY, keyTag, "
-        "{automorphismIndex});\n";
-  os << "  auto existingKeyMap = " << contextName
-     << "->GetEvalAutomorphismKeyMap(keyTag);\n";
-  os << "  existingKeyMap.erase(automorphismIndex);\n";
-  os << "}\n";
+LogicalResult OpenFhePkeEmitter::printOperation(SerializeKeyOp op) {
+  // Get the rotation index from the integer attribute
+  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
+  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+  auto evalKeyName = variableNames->getNameForValue(op.getEvalKey());
+
+  os << "keymem_rt.serializeKey(" << rotationIndex << ");\n";
 
   return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(DeserializeKeyOp op) {
+  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
+  // auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+
+  os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(ClearKeyOp op) {
+  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
+  // auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+
+  os << "keymem_rt.clearKey(" << rotationIndex << ");\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(CompressKeyOp op) {
+  emitAutoAssignPrefix(op.getResultKey());
+  auto evalKeyName = variableNames->getNameForValue(op.getEvalKey());
+  // TODO get the openfhe code first
+  return failure();
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(AutomorphOp op) {

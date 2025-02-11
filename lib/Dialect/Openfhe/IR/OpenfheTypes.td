@@ -43,6 +43,15 @@ def Openfhe_PublicKeyOrPrivateKey : AnyTypeOf<[Openfhe_PublicKey, Openfhe_Privat
 def Openfhe_EvalKey : Openfhe_Type<"EvalKey", "eval_key"> {
   let summary = "The evaluation key required to keyswitch/relinearize/rotate/automorphism operation in OpenFHE.";
   let asmName = "ek";
+  let description = [{
+    An evaluation key that contains both the key material and an optional rotation index
+    it was generated for. The rotation index specifies the number of slots to
+    rotate by when this key is used for rotation operations.
+  }];
+  let parameters = (ins
+    OptionalParameter<"IntegerAttr">:$rotation_index
+  );
+  let assemblyFormat = "`<` (`index` `=` $rotation_index^)? `>`";
 }
 
 def Openfhe_CCParams : Openfhe_Type<"CCParams", "cc_params"> {

@@ -290,7 +290,7 @@ def RotOp : Openfhe_Op<"rot",[
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
     NewLWECiphertext:$ciphertext,
-    Builtin_IntegerAttr:$index
+    Openfhe_EvalKey:$evalKey
   );
   let results = (outs NewLWECiphertext:$output);
 }
@@ -320,5 +320,79 @@ def KeySwitchOp : Openfhe_Op<"key_switch", [
 }
 
 def BootstrapOp : Openfhe_UnaryTypeSwitchOp<"bootstrap"> { let summary = "OpenFHE bootstrap operation of a ciphertext. (For CKKS)"; }
+
+def DeserializeKeyOp : Openfhe_Op<"deserialize_key"> {
+  let summary = "Deserialize a previously serialized rotation key";
+  let description = [{
+    Takes a serialized evaluation key and deserializes it back into the context.
+    This operation just loads the key from a file into context memory.
+
+    Example:
+    ```mlir
+    openfhe.deserialize_key %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Builtin_IntegerAttr:$index
+  );
+  let results = (outs Openfhe_EvalKey:$evalKey);
+}
+
+def SerializeKeyOp : Openfhe_Op<"serialize_key"> {
+  let summary = "Serialize a rotation key for a given rotation index";
+  let description = [{
+    Serializes a rotation key for a given rotation index, returning an evaluation key
+    that encapsulates both the key data and the rotation amount.
+
+    Example:
+    ```mlir
+    %ek = openfhe.serialize_key %cc, 1 : !openfhe.crypto_context -> !openfhe.eval_key
+    %rotated = openfhe.rot %cc, %ct, %ek : !openfhe.crypto_context, !openfhe.lwe_ciphertext, !openfhe.eval_key -> !openfhe.lwe_ciphertext
+    ```
+  }];
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Openfhe_EvalKey:$evalKey
+  );
+}
+
+def ClearKeyOp : Openfhe_Op<"clear_key"> {
+  let summary = "Clear a rotation key from memory";
+  let description = [{
+    Takes an evaluation key and clears it from the context memory.
+    This helps manage memory usage by removing keys when they're no longer needed.
+
+    Example:
+    ```mlir
+    openfhe.clear_key %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Openfhe_EvalKey:$evalKey
+  );
+}
+
+def CompressKeyOp : Openfhe_Op<"compress_key"> {
+  let summary = "Compress a rotation key to reduce memory usage";
+  let description = [{
+    Takes an evaluation key and compresses it to reduce memory usage, returning the
+    compressed key which can still be used in operations.
+
+    Example:
+    ```mlir
+    %compressed_ek = openfhe.compress_key %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key -> !openfhe.eval_key
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Openfhe_EvalKey:$evalKey
+  );
+  let results = (outs Openfhe_EvalKey:$resultKey);
+}
 
 #endif  // LIB_DIALECT_OPENFHE_IR_OPENFHEOPS_TD_

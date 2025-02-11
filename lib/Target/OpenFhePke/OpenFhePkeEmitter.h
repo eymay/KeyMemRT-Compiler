@@ -135,6 +135,10 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(NegateOp op);
   LogicalResult printOperation(RelinOp op);
   LogicalResult printOperation(RotOp op);
+  LogicalResult printOperation(SerializeKeyOp op);
+  LogicalResult printOperation(DeserializeKeyOp op);
+  LogicalResult printOperation(ClearKeyOp op);
+  LogicalResult printOperation(CompressKeyOp op);
   LogicalResult printOperation(SetupBootstrapOp op);
   LogicalResult printOperation(SquareOp op);
   LogicalResult printOperation(SubOp op);
