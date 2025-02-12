@@ -9,6 +9,8 @@ cc_library(
     srcs = ["RotationKeyLivenessAnalysis.cpp"],
     hdrs = ["RotationKeyLivenessAnalysis.h"],
     deps = [
+        "@heir//lib/Dialect/LWE/IR:Dialect",
+        "@heir//lib/Dialect/Openfhe/IR:Dialect",
         "@heir//lib/Dialect/TensorExt/IR:Dialect",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:Analysis",

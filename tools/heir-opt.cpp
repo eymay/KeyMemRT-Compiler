@@ -80,6 +80,7 @@
 #include "lib/Transforms/PopulateScale/PopulateScale.h"
 #include "lib/Transforms/PropagateAnnotation/PropagateAnnotation.h"
 #include "lib/Transforms/RotationKeyOptimize/RotationKeyOptimize.h"
+#include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h"
 #include "lib/Transforms/SecretInsertMgmt/Passes.h"
 #include "lib/Transforms/Secretize/Passes.h"
 #include "lib/Transforms/SelectRewrite/SelectRewrite.h"
@@ -283,6 +284,7 @@ int main(int argc, char **argv) {
   registerTensorToScalarsPasses();
   registerTensorLinalgToAffineLoops();
   registerRotationKeyOptimizePasses();
+  registerMergeEvalKeysPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS
 #ifndef HEIR_ABC_BINARY

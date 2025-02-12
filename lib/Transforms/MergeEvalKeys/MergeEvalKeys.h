@@ -7,12 +7,12 @@ namespace mlir {
 namespace heir {
 
 #define GEN_PASS_DECL
-#include "lib/Transforms/RotationKeyOptimize/RotationKeyOptimize.h.inc"
+#include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h.inc"
 
 #define GEN_PASS_REGISTRATION
-#include "lib/Transforms/RotationKeyOptimize/RotationKeyOptimize.h.inc"
+#include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h.inc"
 
 }  // namespace heir
 }  // namespace mlir
 
-#endif  // LIB_TRANSFORMS_OPTIMIZE_RELINEARIZATION_H_
+#endif  // LIB_TRANSFORMS_ROTATION_KEY_OPTIMIZE_H_

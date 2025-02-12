@@ -6,10 +6,10 @@ package(
 )
 
 cc_library(
-    name = "RotationKeyOptimize",
-    srcs = ["RotationKeyOptimize.cpp"],
+    name = "MergeEvalKeys",
+    srcs = ["MergeEvalKeys.cpp"],
     hdrs = [
-        "RotationKeyOptimize.h",
+        "MergeEvalKeys.h",
     ],
     deps = [
         ":pass_inc_gen",
@@ -19,9 +19,12 @@ cc_library(
         "@heir//lib/Analysis/RotationKeyLivenessAnalysis",
         "@heir//lib/Analysis/SecretnessAnalysis",
         "@heir//lib/Dialect:Utils",
+        "@heir//lib/Dialect/CKKS/IR:Dialect",
+        "@heir//lib/Dialect/LWE/IR:Dialect",
         "@heir//lib/Dialect/Mgmt/IR:Dialect",
         "@heir//lib/Dialect/Mgmt/Transforms",
         "@heir//lib/Dialect/Mgmt/Transforms:AnnotateMgmt",
+        "@heir//lib/Dialect/Openfhe/IR:Dialect",
         "@heir//lib/Dialect/Secret/IR:Dialect",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:Analysis",
@@ -35,5 +38,5 @@ cc_library(
 
 add_heir_transforms(
     generated_target_name = "pass_inc_gen",
-    pass_name = "RotationKeyOptimize",
+    pass_name = "MergeEvalKeys",
 )

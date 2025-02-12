@@ -123,6 +123,7 @@ cc_binary(
         "@heir//lib/Transforms/LowerPolynomialEval",
         "@heir//lib/Transforms/MemrefToArith:ExpandCopy",
         "@heir//lib/Transforms/MemrefToArith:MemrefToArithRegistration",
+        "@heir//lib/Transforms/MergeEvalKeys",
         "@heir//lib/Transforms/OperationBalancer",
         "@heir//lib/Transforms/OptimizeRelinearization",
         "@heir//lib/Transforms/PolynomialApproximation",
