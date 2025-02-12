@@ -15,6 +15,15 @@ enum class KeyMemMode {
   IMPERATIVE  // Performs operations as requested
 };
 
+inline std::string getModeString(KeyMemMode mode) {
+  switch (mode) {
+    case KeyMemMode::IGNORE:
+      return "ignore";
+    case KeyMemMode::IMPERATIVE:
+      return "imperative";
+  }
+}
+
 class KeyMemRT {
  public:
   KeyMemRT(CryptoContext<DCRTPoly> context,

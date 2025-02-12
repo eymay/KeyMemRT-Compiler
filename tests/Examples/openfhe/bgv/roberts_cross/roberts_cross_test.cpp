@@ -3,6 +3,17 @@
 
 #include "gmock/gmock.h"  // from @googletest
 #include "gtest/gtest.h"  // from @googletest
+#include "src/core/include/lattice/hal/lat-backend.h"  // from @openfhe
+#include "src/pke/include/constants.h"                 // from @openfhe
+#include "src/pke/include/cryptocontext-fwd.h"         // from @openfhe
+#include "src/pke/include/gen-cryptocontext.h"         // from @openfhe
+#include "src/pke/include/key/keypair.h"               // from @openfhe
+#include "src/pke/include/openfhe.h"                   // from @openfhe
+#include "src/pke/include/scheme/bgvrns/gen-cryptocontext-bgvrns-params.h"  // from @openfhe
+#include "src/pke/include/scheme/bgvrns/gen-cryptocontext-bgvrns.h"  // from @openfhe
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
+#include "tests/Examples/openfhe/ResourceMonitor.hpp"
+KeyMemRT keymem_rt;
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/bgv/roberts_cross/roberts_cross_64x64_lib.h"
@@ -14,6 +25,11 @@ namespace heir {
 namespace openfhe {
 
 TEST(RobertsCrossTest, TestInput1) {
+  auto mode = KeyMemMode::IGNORE;
+  keymem_rt.setKeyMemMode(mode);
+  ResourceMonitor monitor;
+  monitor.start();
+
   auto cryptoContext = roberts_cross__generate_crypto_context();
   auto keyPair = cryptoContext->KeyGen();
   auto publicKey = keyPair.publicKey;
@@ -52,6 +68,10 @@ TEST(RobertsCrossTest, TestInput1) {
   auto inputEncrypted =
       roberts_cross__encrypt__arg0(cryptoContext, input, keyPair.publicKey);
   auto outputEncrypted = roberts_cross(cryptoContext, inputEncrypted);
+  monitor.stop();
+  std::string filename =
+      "./resource_usage_roberts_cross_" + getModeString(mode) + ".csv";
+  monitor.save_to_file(filename);
   auto actual = roberts_cross__decrypt__result0(cryptoContext, outputEncrypted,
                                                 keyPair.secretKey);
 

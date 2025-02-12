@@ -3,6 +3,17 @@
 
 #include "gmock/gmock.h"  // from @googletest
 #include "gtest/gtest.h"  // from @googletest
+#include "src/core/include/lattice/hal/lat-backend.h"  // from @openfhe
+#include "src/pke/include/constants.h"                 // from @openfhe
+#include "src/pke/include/cryptocontext-fwd.h"         // from @openfhe
+#include "src/pke/include/gen-cryptocontext.h"         // from @openfhe
+#include "src/pke/include/key/keypair.h"               // from @openfhe
+#include "src/pke/include/openfhe.h"                   // from @openfhe
+#include "src/pke/include/scheme/bgvrns/gen-cryptocontext-bgvrns-params.h"  // from @openfhe
+#include "src/pke/include/scheme/bgvrns/gen-cryptocontext-bgvrns.h"  // from @openfhe
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
+#include "tests/Examples/openfhe/ResourceMonitor.hpp"
+KeyMemRT keymem_rt;
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/bgv/box_blur/box_blur_64x64_lib.h"
@@ -14,10 +25,23 @@ namespace heir {
 namespace openfhe {
 
 TEST(BoxBlurTest, TestInput1) {
+  ResourceMonitor monitor;
+  monitor.start();
   // needs to be large enough to accommodate overflow in the plaintext space
   // 786433 is the smallest prime p above 2**17 for which (p-1) / 65536 is an
   // integer.
-  auto cryptoContext = box_blur__generate_crypto_context();
+  // auto cryptoContext = box_blur__generate_crypto_context();
+  CCParamsT params;
+  params.SetMultiplicativeDepth(10);
+  params.SetPlaintextModulus(4295294977);
+  params.SetEvalAddCount(9);
+  params.SetKeySwitchCount(9);
+  CryptoContextT cryptoContext = GenCryptoContext(params);
+  cryptoContext->Enable(PKE);
+  cryptoContext->Enable(KEYSWITCH);
+  cryptoContext->Enable(LEVELEDSHE);
+  auto mode = KeyMemMode::IMPERATIVE;
+  keymem_rt.setKeyMemMode(mode);
   auto keyPair = cryptoContext->KeyGen();
   auto publicKey = keyPair.publicKey;
   auto secretKey = keyPair.secretKey;
@@ -49,6 +73,11 @@ TEST(BoxBlurTest, TestInput1) {
   auto inputEncrypted =
       box_blur__encrypt__arg0(cryptoContext, input, keyPair.publicKey);
   auto outputEncrypted = box_blur(cryptoContext, inputEncrypted);
+  monitor.stop();
+  std::string filename =
+      "./resource_usage_box_blur_" + getModeString(mode) + ".csv";
+  monitor.save_to_file(filename);
+
   auto actual = box_blur__decrypt__result0(cryptoContext, outputEncrypted,
                                            keyPair.secretKey);
 

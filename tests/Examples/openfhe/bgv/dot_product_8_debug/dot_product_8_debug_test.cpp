@@ -11,6 +11,9 @@
 #include "src/core/include/lattice/hal/lat-backend.h"  // from @openfhe
 #include "src/core/include/utils/inttypes.h"           // from @openfhe
 #include "src/pke/include/key/privatekey-fwd.h"        // from @openfhe
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
+#include "tests/Examples/openfhe/ResourceMonitor.hpp"
+KeyMemRT keymem_rt;
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/bgv/dot_product_8_debug/dot_product_8_debug_lib.h"

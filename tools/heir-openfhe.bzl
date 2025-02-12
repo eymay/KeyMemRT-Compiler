@@ -33,7 +33,7 @@ def openfhe_lib(name, mlir_src, generated_lib_header, cc_lib_target_name, heir_o
         heir_opt(
             name = heir_opt_name,
             src = mlir_src,
-            pass_flags = heir_opt_flags,
+            pass_flags = heir_opt_flags + ["--rotation-key-optimize"],
             generated_filename = generated_heir_opt_name,
             data = data,
         )

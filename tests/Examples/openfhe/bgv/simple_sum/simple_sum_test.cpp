@@ -1,7 +1,18 @@
 #include <cstdint>
 #include <vector>
 
-#include "gtest/gtest.h"  // from @googletest
+#include "gtest/gtest.h"                               // from @googletest
+#include "src/core/include/lattice/hal/lat-backend.h"  // from @openfhe
+#include "src/pke/include/constants.h"                 // from @openfhe
+#include "src/pke/include/cryptocontext-fwd.h"         // from @openfhe
+#include "src/pke/include/gen-cryptocontext.h"         // from @openfhe
+#include "src/pke/include/key/keypair.h"               // from @openfhe
+#include "src/pke/include/openfhe.h"                   // from @openfhe
+#include "src/pke/include/scheme/bgvrns/gen-cryptocontext-bgvrns-params.h"  // from @openfhe
+#include "src/pke/include/scheme/bgvrns/gen-cryptocontext-bgvrns.h"  // from @openfhe
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
+#include "tests/Examples/openfhe/ResourceMonitor.hpp"
+KeyMemRT keymem_rt;
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/bgv/simple_sum/simple_sum_lib.h"
@@ -11,6 +22,11 @@ namespace heir {
 namespace openfhe {
 
 TEST(BinopsTest, TestInput1) {
+  auto mode = KeyMemMode::IGNORE;
+  keymem_rt.setKeyMemMode(mode);
+  ResourceMonitor monitor;
+  monitor.start();
+
   auto cryptoContext = simple_sum__generate_crypto_context();
   auto keyPair = cryptoContext->KeyGen();
   auto publicKey = keyPair.publicKey;
@@ -26,6 +42,10 @@ TEST(BinopsTest, TestInput1) {
   auto inputEncrypted =
       simple_sum__encrypt__arg0(cryptoContext, input, keyPair.publicKey);
   auto outputEncrypted = simple_sum(cryptoContext, inputEncrypted);
+  monitor.stop();
+  std::string filename =
+      "./resource_usage_simple_sum_" + getModeString(mode) + ".csv";
+  monitor.save_to_file(filename);
   auto actual = simple_sum__decrypt__result0(cryptoContext, outputEncrypted,
                                              keyPair.secretKey);
 

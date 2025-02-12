@@ -2,6 +2,10 @@
 #include <vector>
 
 #include "gtest/gtest.h"  // from @googletest
+#include "src/pke/include/openfhe.h"  // from @openfhe
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
+#include "tests/Examples/openfhe/ResourceMonitor.hpp"
+KeyMemRT keymem_rt;
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/bgv/dot_product_8/dot_product_8_lib.h"
@@ -11,6 +15,11 @@ namespace heir {
 namespace openfhe {
 
 TEST(DotProduct8Test, RunTest) {
+  auto mode = KeyMemMode::IGNORE;
+  keymem_rt.setKeyMemMode(mode);
+  ResourceMonitor monitor;
+  monitor.start();
+
   auto cryptoContext = dot_product__generate_crypto_context();
   auto keyPair = cryptoContext->KeyGen();
   auto publicKey = keyPair.publicKey;
@@ -28,6 +37,10 @@ TEST(DotProduct8Test, RunTest) {
       dot_product__encrypt__arg1(cryptoContext, arg1, publicKey);
   auto outputEncrypted =
       dot_product(cryptoContext, arg0Encrypted, arg1Encrypted);
+  monitor.stop();
+  std::string filename =
+      "./resource_usage_dot_product_8_" + getModeString(mode) + ".csv";
+  monitor.save_to_file(filename);
   auto actual =
       dot_product__decrypt__result0(cryptoContext, outputEncrypted, secretKey);
 
