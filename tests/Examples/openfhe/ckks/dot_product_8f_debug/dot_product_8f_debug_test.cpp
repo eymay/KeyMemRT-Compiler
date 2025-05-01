@@ -1,6 +1,10 @@
 #include <vector>
 
 #include "gtest/gtest.h"  // from @googletest
+#include "tests/Examples/openfhe/KeyMemRT.hpp"
+#include "tests/Examples/openfhe/ResourceMonitor.hpp"
+
+KeyMemRT keymem_rt;
 
 // Generated headers (block clang-format from messing up order)
 #include "tests/Examples/openfhe/ckks/dot_product_8f_debug/dot_product_8f_debug_lib.h"
