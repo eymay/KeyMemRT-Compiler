@@ -1,7 +1,10 @@
 #ifndef LIB_ANALYSIS_OPTIMIZE_ROTATIONBASEANALYSIS_H
 #define LIB_ANALYSIS_OPTIMIZE_ROTATIONBASEANALYSIS_H
 
+#include <functional>
 #include <map>
+#include <set>
+#include <unordered_set>
 #include <vector>
 
 #include "llvm/include/llvm/ADT/DenseMap.h"
@@ -47,8 +50,21 @@ class RotationBaseAnalysis {
   // Collects all rotation indices from the IR
   void collectRotationIndices();
 
+  // Generates an expanded set of candidate rotation indices
+  void generateCandidateIndices();
+
+  // Helper function to generate all subset sums of a given size
+  std::vector<int64_t> generateSubsetSums(const std::vector<int64_t> &elements,
+                                          int subsetSize, int64_t maxValue);
+
+  // Helper function to compute the GCD of two integers
+  int64_t computeGCD(int64_t a, int64_t b);
+
   Operation *opToRunOn;
   int baseSetSize;
+
+  // The expanded set of candidate indices for the base set
+  std::vector<int64_t> candidateIndices;
 
   // The optimal base set after solving
   std::vector<int64_t> optimalBaseSet;
