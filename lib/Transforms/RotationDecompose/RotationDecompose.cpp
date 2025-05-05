@@ -510,340 +510,116 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
   LogicalResult transformRotationOps(
       Operation *op, const std::vector<int64_t> &baseSet,
       const std::map<int64_t, std::vector<int64_t>> &decompositions) {
-    // Track operations to delete and replace
+    // Track operations to delete
     llvm::SmallVector<Operation *, 16> opsToDelete;
 
-    // Structure to represent a cluster of rotation operations
-    struct RotationCluster {
-      // Operations in the cluster (rotation, deserialize, clear)
-      llvm::SmallVector<Operation *, 16> operations;
-      // Start and end indices in the block
-      unsigned startIdx;
-      unsigned endIdx;
-      // Distance between operations
-      unsigned distance;
-      // Set of rotation indices used in this cluster
-      llvm::DenseSet<int64_t> rotationIndices;
-    };
+    // First pass: Process deserialize operations
+    op->walk([&](openfhe::DeserializeKeyOp deserOp) {
+      if (!deserOp->hasAttr("index")) return;
 
-    // Find clusters of rotations
-    llvm::SmallVector<RotationCluster, 8> clusters;
+      int64_t rotIndex = deserOp->getAttrOfType<IntegerAttr>("index").getInt();
 
-    // Helper to get index of an operation in its parent block
-    auto getOpIndexInBlock = [](Operation *op) -> unsigned {
-      Block *block = op->getBlock();
-      unsigned idx = 0;
-      for (auto &blockOp : block->getOperations()) {
-        if (&blockOp == op) {
-          return idx;
-        }
-        idx++;
-      }
-      return UINT_MAX;  // Not found
-    };
-
-    // Walk through all blocks in the module
-    op->walk([&](Block *block) {
-      // Skip empty blocks
-      if (block->empty()) {
+      // Skip if this is a base index
+      if (std::find(baseSet.begin(), baseSet.end(), rotIndex) !=
+          baseSet.end()) {
         return;
       }
 
-      // Find all rotation operations in this block
-      llvm::SmallVector<openfhe::RotOp, 16> rotOps;
-      llvm::SmallVector<unsigned, 16> rotOpIndices;
-
-      unsigned idx = 0;
-      for (auto &blockOp : block->getOperations()) {
-        if (auto rotOp = dyn_cast<openfhe::RotOp>(&blockOp)) {
-          rotOps.push_back(rotOp);
-          rotOpIndices.push_back(idx);
-        }
-        idx++;
-      }
-
-      // Skip blocks with fewer than 2 rotation operations
-      if (rotOps.size() < 2) {
+      // Get decomposition for this index
+      auto decompIt = decompositions.find(rotIndex);
+      if (decompIt == decompositions.end() || decompIt->second.empty()) {
         return;
       }
 
-      // Identify clusters of rotations based on distance
-      const unsigned maxDistance = 10;  // Configure this based on your needs
+      const auto &baseIndices = decompIt->second;
 
-      // Analyze distances between rotations
-      for (unsigned i = 0; i < rotOps.size() - 1; i++) {
-        RotationCluster cluster;
-        cluster.startIdx = rotOpIndices[i];
-        cluster.endIdx = rotOpIndices[i];
-        cluster.distance = 0;
-
-        // Start a new cluster with this rotation
-        auto startRotOp = rotOps[i];
-
-        // Add the rotation and its associated deserialize/clear ops
-        cluster.operations.push_back(startRotOp);
-
-        // Get rotation index
-        int64_t rotIndex = -1;
-        auto evalKey = startRotOp.getEvalKey();
-        if (auto deserOp = dyn_cast_or_null<openfhe::DeserializeKeyOp>(
-                evalKey.getDefiningOp())) {
-          if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
-            rotIndex = indexAttr.getInt();
-            cluster.rotationIndices.insert(rotIndex);
-            cluster.operations.push_back(deserOp);
-
-            // Find the associated clear op
-            for (Operation *user : deserOp.getResult().getUsers()) {
-              if (auto clearOp = dyn_cast<openfhe::ClearKeyOp>(user)) {
-                cluster.operations.push_back(clearOp);
-                break;
-              }
-            }
-          }
-        }
-
-        // Try to extend this cluster
-        for (unsigned j = i + 1; j < rotOps.size(); j++) {
-          unsigned distance = rotOpIndices[j] - rotOpIndices[j - 1];
-
-          // If the rotation is too far, end this cluster
-          if (distance > maxDistance) {
-            break;
-          }
-
-          // Add this rotation to the current cluster
-          auto nextRotOp = rotOps[j];
-          cluster.operations.push_back(nextRotOp);
-          cluster.endIdx = rotOpIndices[j];
-          cluster.distance += distance;
-
-          // Get rotation index
-          auto nextEvalKey = nextRotOp.getEvalKey();
-          if (auto deserOp = dyn_cast_or_null<openfhe::DeserializeKeyOp>(
-                  nextEvalKey.getDefiningOp())) {
-            if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
-              int64_t nextRotIndex = indexAttr.getInt();
-              cluster.rotationIndices.insert(nextRotIndex);
-              cluster.operations.push_back(deserOp);
-
-              // Find the associated clear op
-              for (Operation *user : deserOp.getResult().getUsers()) {
-                if (auto clearOp = dyn_cast<openfhe::ClearKeyOp>(user)) {
-                  cluster.operations.push_back(clearOp);
-                  break;
-                }
-              }
-            }
-          }
-        }
-
-        // Only keep clusters with multiple different rotation indices
-        if (cluster.rotationIndices.size() > 1) {
-          clusters.push_back(cluster);
-        }
-      }
-    });
-
-    if (clusters.empty()) {
       if (verbose) {
-        llvm::outs()
-            << "No suitable rotation clusters found for optimization\n";
-      }
-      return success();
-    }
-
-    if (verbose) {
-      llvm::outs() << "Found " << clusters.size() << " rotation clusters\n";
-      for (unsigned i = 0; i < clusters.size(); i++) {
-        llvm::outs() << "Cluster " << i << ": " << clusters[i].operations.size()
-                     << " operations, distance " << clusters[i].distance
-                     << ", rotation indices: ";
-        for (auto idx : clusters[i].rotationIndices) {
-          llvm::outs() << idx << " ";
+        llvm::outs() << "Will transform rotations with index " << rotIndex
+                     << " using base indices: [";
+        for (size_t i = 0; i < baseIndices.size(); ++i) {
+          llvm::outs() << baseIndices[i];
+          if (i < baseIndices.size() - 1) llvm::outs() << ", ";
         }
-        llvm::outs() << "\n";
+        llvm::outs() << "]\n";
       }
-    }
 
-    // For each cluster, we need to decide whether to apply the transformation
-    for (auto &cluster : clusters) {
-      // Skip clusters where all indices are already in the base set
-      bool allInBaseSet = true;
-      for (int64_t idx : cluster.rotationIndices) {
-        if (std::find(baseSet.begin(), baseSet.end(), idx) == baseSet.end()) {
-          allInBaseSet = false;
+      // Create the base deserialize operations
+      OpBuilder builder(deserOp);
+
+      // Create deserialize ops for base indices
+      llvm::DenseMap<int64_t, Value> baseKeyMap;
+      for (int64_t baseIdx : baseIndices) {
+        // Only create one deserialize op per unique base index
+        if (baseKeyMap.count(baseIdx) > 0) continue;
+
+        auto baseDeserOp = builder.create<openfhe::DeserializeKeyOp>(
+            deserOp.getLoc(),
+            openfhe::EvalKeyType::get(op->getContext(),
+                                      builder.getIndexAttr(baseIdx)),
+            deserOp.getCryptoContext());
+
+        baseDeserOp->setAttr("index", builder.getIndexAttr(baseIdx));
+        baseKeyMap[baseIdx] = baseDeserOp.getResult();
+      }
+
+      // Process all rotation operations that use this key
+      llvm::SmallVector<openfhe::RotOp, 4> rotOps;
+      for (Operation *user : deserOp.getResult().getUsers()) {
+        if (auto rotOp = dyn_cast<openfhe::RotOp>(user)) {
+          rotOps.push_back(rotOp);
+        }
+      }
+
+      for (auto rotOp : rotOps) {
+        // Replace with a chain of rotations using base keys
+        builder.setInsertionPoint(rotOp);
+
+        Value cryptoContext = rotOp.getCryptoContext();
+        Value inputCiphertext = rotOp.getCiphertext();
+        Type resultType = rotOp.getType();
+
+        // Chain rotations one after another - start with the input
+        Value currentResult = inputCiphertext;
+
+        // Create a rotation for each base index in the decomposition
+        for (int64_t baseIdx : baseIndices) {
+          Value baseKey = baseKeyMap[baseIdx];
+
+          auto baseRotOp = builder.create<openfhe::RotOp>(
+              rotOp.getLoc(), resultType, cryptoContext, currentResult,
+              baseKey);
+
+          // Update current result for the next rotation in chain
+          currentResult = baseRotOp.getResult();
+        }
+
+        // Replace original rotation with our chain result
+        rotOp.getResult().replaceAllUsesWith(currentResult);
+
+        // Mark for deletion
+        opsToDelete.push_back(rotOp);
+      }
+
+      // Find and process clear operation
+      for (Operation *user : deserOp.getResult().getUsers()) {
+        if (auto clearOp = dyn_cast<openfhe::ClearKeyOp>(user)) {
+          // Create clear operations for base keys
+          builder.setInsertionPoint(clearOp);
+
+          for (auto &[baseIdx, baseKey] : baseKeyMap) {
+            builder.create<openfhe::ClearKeyOp>(
+                clearOp.getLoc(), clearOp.getCryptoContext(), baseKey);
+          }
+
+          // Mark for deletion
+          opsToDelete.push_back(clearOp);
           break;
         }
       }
 
-      if (allInBaseSet) {
-        if (verbose) {
-          llvm::outs()
-              << "Skipping cluster with all indices already in base set\n";
-        }
-        continue;
-      }
-
-      // Process the cluster
-      if (verbose) {
-        llvm::outs() << "Processing cluster with indices: ";
-        for (auto idx : cluster.rotationIndices) {
-          llvm::outs() << idx << " ";
-        }
-        llvm::outs() << "\n";
-      }
-
-      // First find all non-base deserialize operations in this cluster
-      struct DeserializedKey {
-        openfhe::DeserializeKeyOp deserOp;
-        openfhe::ClearKeyOp clearOp;
-        int64_t rotIndex;
-        std::vector<int64_t> baseIndices;  // Base indices from decomposition
-        std::vector<Value> baseKeys;       // Corresponding base key values
-      };
-
-      llvm::SmallVector<DeserializedKey, 16> keysToDecompose;
-
-      for (Operation *op : cluster.operations) {
-        auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(op);
-        if (!deserOp) {
-          continue;
-        }
-
-        if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
-          int64_t index = indexAttr.getInt();
-
-          // Skip base indices, we keep these as-is
-          if (std::find(baseSet.begin(), baseSet.end(), index) !=
-              baseSet.end()) {
-            continue;
-          }
-
-          // Find the associated clear op if any
-          openfhe::ClearKeyOp clearOp = nullptr;
-          for (Operation *user : deserOp.getResult().getUsers()) {
-            if (auto op = dyn_cast<openfhe::ClearKeyOp>(user)) {
-              clearOp = op;
-              break;
-            }
-          }
-
-          // Get the decomposition for this index
-          auto decompIt = decompositions.find(index);
-          if (decompIt == decompositions.end() || decompIt->second.empty()) {
-            llvm::errs() << "No decomposition found for index " << index
-                         << "\n";
-            continue;
-          }
-
-          // Record for processing
-          keysToDecompose.push_back(
-              {deserOp, clearOp, index, decompIt->second, {}});
-        }
-      }
-
-      if (keysToDecompose.empty()) {
-        if (verbose) {
-          llvm::outs() << "No operations to transform in this cluster\n";
-        }
-        continue;
-      }
-
-      // Process each deserialize operation
-      OpBuilder builder(op->getContext());
-
-      for (auto &keyInfo : keysToDecompose) {
-        if (verbose) {
-          llvm::outs() << "Processing deserialize op for index "
-                       << keyInfo.rotIndex << " using base indices: [";
-          for (size_t i = 0; i < keyInfo.baseIndices.size(); ++i) {
-            llvm::outs() << keyInfo.baseIndices[i];
-            if (i < keyInfo.baseIndices.size() - 1) llvm::outs() << ", ";
-          }
-          llvm::outs() << "]\n";
-        }
-
-        // Create deserialize operations for each base index
-        builder.setInsertionPoint(keyInfo.deserOp);
-
-        for (int64_t baseIdx : keyInfo.baseIndices) {
-          auto baseDeserOp = builder.create<openfhe::DeserializeKeyOp>(
-              keyInfo.deserOp.getLoc(),
-              openfhe::EvalKeyType::get(keyInfo.deserOp.getContext(),
-                                        builder.getIndexAttr(baseIdx)),
-              keyInfo.deserOp.getCryptoContext());
-
-          baseDeserOp->setAttr("index", builder.getIndexAttr(baseIdx));
-          keyInfo.baseKeys.push_back(baseDeserOp.getResult());
-        }
-
-        // Now find and transform all rotation operations that use this key
-        llvm::SmallVector<openfhe::RotOp, 8> rotOpsToTransform;
-
-        for (Operation *user : keyInfo.deserOp.getResult().getUsers()) {
-          if (auto rotOp = dyn_cast<openfhe::RotOp>(user)) {
-            rotOpsToTransform.push_back(rotOp);
-          }
-        }
-
-        for (auto rotOp : rotOpsToTransform) {
-          // Create the decomposition sequence for this rotation
-          builder.setInsertionPoint(rotOp);
-
-          // Get the input values
-          Value cryptoContext = rotOp.getCryptoContext();
-          Value inputCiphertext = rotOp.getCiphertext();
-          Type resultType = rotOp.getType();
-          Location loc = rotOp.getLoc();
-
-          // Create the first rotation with the first base key
-          auto firstRotOp = builder.create<openfhe::RotOp>(
-              loc, resultType, cryptoContext, inputCiphertext,
-              keyInfo.baseKeys[0]);
-
-          // Current result starts with the first rotation
-          Value currentResult = firstRotOp.getResult();
-
-          // Add the rest of the rotations
-          for (size_t i = 1; i < keyInfo.baseKeys.size(); ++i) {
-            // Create a rotation with this base key
-            auto baseRotOp = builder.create<openfhe::RotOp>(
-                loc, resultType, cryptoContext, inputCiphertext,
-                keyInfo.baseKeys[i]);
-
-            // Add to the current result
-            currentResult = builder.create<openfhe::AddOp>(
-                loc, resultType, cryptoContext, currentResult,
-                baseRotOp.getResult());
-          }
-
-          // Replace the original rotation's result with our sequence result
-          rotOp.getResult().replaceAllUsesWith(currentResult);
-
-          // Mark the original rotation for deletion
-          opsToDelete.push_back(rotOp);
-        }
-
-        // If there's a clear op, replace it with clears for all base keys
-        if (keyInfo.clearOp) {
-          builder.setInsertionPoint(keyInfo.clearOp);
-
-          // Create clear operations for each base key
-          for (Value baseKey : keyInfo.baseKeys) {
-            builder.create<openfhe::ClearKeyOp>(
-                keyInfo.clearOp.getLoc(), keyInfo.clearOp.getCryptoContext(),
-                baseKey);
-          }
-
-          // Mark the original clear op for deletion
-          opsToDelete.push_back(keyInfo.clearOp);
-        }
-
-        // Mark the original deserialize op for deletion
-        opsToDelete.push_back(keyInfo.deserOp);
-      }
-    }
+      // Mark deserialize op for deletion
+      opsToDelete.push_back(deserOp);
+    });
 
     // Delete all marked operations
     for (Operation *op : opsToDelete) {
@@ -851,7 +627,7 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     }
 
     return success();
-  };
+  }
 };
 }  // namespace heir
 }  // namespace mlir
