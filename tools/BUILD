@@ -126,10 +126,10 @@ cc_binary(
         "@heir//lib/Transforms/MergeEvalKeys",
         "@heir//lib/Transforms/OperationBalancer",
         "@heir//lib/Transforms/OptimizeRelinearization",
-        "@heir//lib/Transforms/OptimizeRotationBase",
         "@heir//lib/Transforms/PolynomialApproximation",
         "@heir//lib/Transforms/PopulateScale",
         "@heir//lib/Transforms/PropagateAnnotation",
+        "@heir//lib/Transforms/RotationDecompose",
         "@heir//lib/Transforms/SecretInsertMgmt",
         "@heir//lib/Transforms/Secretize",
         "@heir//lib/Transforms/SelectRewrite",
@@ -297,3 +297,18 @@ bzl_library(
     srcs = ["mlir-translate.bzl"],
     visibility = ["//visibility:public"],
 )
+
+cc_binary(
+    name = "heir-rotation-ilp-stress-test",
+    srcs = ["OptimizeRotationILPStressTest.cpp"],
+    deps = [
+        "@heir//lib/Analysis/OptimizeRotationBaseAnalysis",
+        "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
