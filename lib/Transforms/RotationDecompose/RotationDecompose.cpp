@@ -769,10 +769,12 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
 
         for (int64_t baseIdx : keyInfo.baseIndices) {
           auto baseDeserOp = builder.create<openfhe::DeserializeKeyOp>(
-              keyInfo.deserOp.getLoc(), keyInfo.deserOp.getType(),
+              keyInfo.deserOp.getLoc(),
+              openfhe::EvalKeyType::get(keyInfo.deserOp.getContext(),
+                                        builder.getIndexAttr(baseIdx)),
               keyInfo.deserOp.getCryptoContext());
 
-          baseDeserOp->setAttr("index", builder.getI64IntegerAttr(baseIdx));
+          baseDeserOp->setAttr("index", builder.getIndexAttr(baseIdx));
           keyInfo.baseKeys.push_back(baseDeserOp.getResult());
         }
 
