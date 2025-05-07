@@ -24,7 +24,7 @@ def RotationDecompose : Pass<"rotation-decompose"> {
   let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
 
   let options = [
-    Option<"baseSetSize", "base-set-size", "unsigned", /*default=*/"2",
+    Option<"baseSetSize", "base-set-size", "unsigned", /*default=*/"10",
            "The size of the base rotation set to use">,
     Option<"maxChainLength", "max-chain-length", "unsigned", /*default=*/"5",
            "Maximum number of additions allowed in a chain">,

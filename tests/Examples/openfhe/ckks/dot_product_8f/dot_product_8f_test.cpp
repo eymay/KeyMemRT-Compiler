@@ -20,7 +20,7 @@ TEST(DotProduct8FTest, RunTest) {
   ResourceMonitor monitor;
   monitor.start();
   CCParamsT params;
-  params.SetMultiplicativeDepth(20);
+  params.SetMultiplicativeDepth(40);
   CryptoContextT cryptoContext = GenCryptoContext(params);
   cryptoContext->Enable(PKE);
   cryptoContext->Enable(KEYSWITCH);

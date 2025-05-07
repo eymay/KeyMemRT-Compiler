@@ -1,5 +1,7 @@
+#include <cstdlib>
 #include <ctime>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "gtest/gtest.h"                  // from @googletest
@@ -21,7 +23,8 @@ TEST(NaiveMatmulTest, RunTest) {
   ResourceMonitor monitor;
   monitor.start();
   CCParamsT params;
-  params.SetMultiplicativeDepth(25);
+  int depth = 45;
+  params.SetMultiplicativeDepth(depth);
   CryptoContextT cryptoContext = GenCryptoContext(params);
   cryptoContext->Enable(PKE);
   cryptoContext->Enable(KEYSWITCH);
@@ -30,7 +33,8 @@ TEST(NaiveMatmulTest, RunTest) {
   auto publicKey = keyPair.publicKey;
   auto secretKey = keyPair.secretKey;
 
-  keymem_rt.setKeyMemMode(KeyMemMode::IMPERATIVE);
+  auto mode = KeyMemMode::IMPERATIVE;
+  keymem_rt.setKeyMemMode(mode);
   cryptoContext = matmul__configure_crypto_context(cryptoContext, secretKey);
 
   std::vector<float> arg0Vals = {1.0, 0, 0, 0, 0, 0, 0, 0,
@@ -53,7 +57,8 @@ TEST(NaiveMatmulTest, RunTest) {
   monitor.stop();
   // Set ROTKEY env variable to a directory in the running environment
   //  const char* output_dir = getenv("ROTKEY");
-  std::string filename = "./resource_usage_HS_MatMul.csv";
+  std::string filename = "./resource_usage_HS_MatMul_" + getModeString(mode) +
+                         "_depth" + std::to_string(depth) + ".csv";
   monitor.save_to_file(filename);
   auto actual =
       matmul__decrypt__result0(cryptoContext, outputEncrypted, secretKey);

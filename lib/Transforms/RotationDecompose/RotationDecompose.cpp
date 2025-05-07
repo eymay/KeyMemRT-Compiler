@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -411,7 +412,7 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
       llvm::outs() << idx << " ";
     }
     llvm::outs() << "\n";
-    op->print(llvm::outs(), OpPrintingFlags().printGenericOpForm());
+    // op->print(llvm::outs(), OpPrintingFlags().printGenericOpForm());
   }
 
  private:
@@ -464,10 +465,12 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     // Write to temp file
     std::string inputFile = writeTempFile(jsonInput);
     std::string outputFile = inputFile + "_output";
-
+    llvm::errs() << "Current working directory: "
+                 << std::filesystem::current_path() << "\n";
+    llvm::errs() << "Python script path: " << pythonScript << "\n";
     // Run Python optimizer
-    std::string cmd = "python " + pythonScript + " --input " + inputFile +
-                      " --output " + outputFile;
+    std::string cmd = ". .venv/bin/activate;  python3 " + pythonScript +
+                      " --input " + inputFile + " --output " + outputFile;
 
     if (verbose) {
       cmd += " --verbose";

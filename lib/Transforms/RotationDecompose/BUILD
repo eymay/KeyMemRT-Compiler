@@ -9,6 +9,7 @@ cc_library(
     name = "RotationDecompose",
     srcs = ["RotationDecompose.cpp"],
     hdrs = ["RotationDecompose.h"],
+    data = ["rotation_optimizer.py"],
     deps = [
         ":pass_inc_gen",
 	"@heir//lib/Dialect/Openfhe/IR:Dialect",
