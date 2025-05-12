@@ -303,10 +303,11 @@ def apply_bsgs_to_range(start, end, verbose=False):
                 
             if target - elem1 in base_elements:
                 best_decomp = [elem1, target - elem1]
+                best_decomp = sorted(best_decomp, reverse=True)
                 break
         
         if best_decomp:
-            decompositions[target] = sorted(best_decomp)
+            decompositions[target] = sorted(best_decomp, reverse=True)
         else:
             # This should rarely happen with proper BSGS elements
             # Fall back to a greedy approach
@@ -328,7 +329,7 @@ def apply_bsgs_to_range(start, end, verbose=False):
                 remaining -= best_elem
             
             if remaining == 0:
-                decompositions[target] = sorted(decomp)
+                decompositions[target] = sorted(decomp, reverse=True)
     
     return base_elements, decompositions
 
@@ -835,7 +836,7 @@ class AdditionGraphMIPOptimizer:
         target = chain[-1][2]
         
         # Return the base numbers used
-        return sorted(dependencies[target])
+        return sorted(dependencies[target],reverse=True)
 
 def process_input(input_data, verbose=False):
     """
