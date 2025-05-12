@@ -450,6 +450,7 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     ss << "  \"base_size\": " << baseSetSize << ",\n";
     ss << "  \"max_chain_length\": " << maxChainLength << ",\n";
     ss << "  \"include_non_targets\": true,\n";
+    ss << "  \"saturated-bsgs\": true,\n";
     ss << "  \"time_limit\": " << timeLimit << "\n";
     ss << "}\n";
 
@@ -469,8 +470,10 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
                  << std::filesystem::current_path() << "\n";
     llvm::errs() << "Python script path: " << pythonScript << "\n";
     // Run Python optimizer
-    std::string cmd = ". .venv/bin/activate;  python3 " + pythonScript +
-                      " --input " + inputFile + " --output " + outputFile;
+    std::string cmd =
+        ". /home/eymen/Documents/keymemrt_project/heir/.venv/bin/activate;  "
+        "python3 " +
+        pythonScript + " --input " + inputFile + " --output " + outputFile;
 
     if (verbose) {
       cmd += " --verbose";

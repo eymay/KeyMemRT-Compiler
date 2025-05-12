@@ -28,7 +28,7 @@ def RotationDecompose : Pass<"rotation-decompose"> {
            "The size of the base rotation set to use">,
     Option<"maxChainLength", "max-chain-length", "unsigned", /*default=*/"5",
            "Maximum number of additions allowed in a chain">,
-    Option<"pythonScript", "python-script", "std::string", /*default=*/"\"lib/Transforms/RotationDecompose/rotation_optimizer.py\"",
+    Option<"pythonScript", "python-script", "std::string", /*default=*/"\"/home/eymen/Documents/keymemrt_project/heir/lib/Transforms/RotationDecompose/rotation_optimizer.py\"",
            "Path to the Python optimizer script">,
     Option<"timeLimit", "time-limit", "unsigned", /*default=*/"300",
            "Time limit for the optimizer in seconds">
