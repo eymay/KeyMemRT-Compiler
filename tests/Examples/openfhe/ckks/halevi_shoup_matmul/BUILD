@@ -11,7 +11,10 @@ openfhe_end_to_end_test(
         "--annotate-module=backend=openfhe scheme=ckks",
         "--mlir-to-ckks=ciphertext-degree=16",
         "--scheme-to-openfhe",
-    ],
+    ] + ["--merge-eval-keys",
+         "--rotation-decompose=base-set-size=500 max-chain-length=2",
+	 "--cse",
+         "--merge-eval-keys"],
     heir_translate_flags = [
         "--openfhe-include-type=source-relative",
     ],

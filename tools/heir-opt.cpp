@@ -70,6 +70,7 @@
 #include "lib/Transforms/ForwardStoreToLoad/ForwardStoreToLoad.h"
 #include "lib/Transforms/FullLoopUnroll/FullLoopUnroll.h"
 #include "lib/Transforms/GenerateParam/GenerateParam.h"
+#include "lib/Transforms/KeyCompression/KeyCompression.h"
 #include "lib/Transforms/LayoutOptimization/LayoutOptimization.h"
 #include "lib/Transforms/LayoutPropagation/LayoutPropagation.h"
 #include "lib/Transforms/LinalgCanonicalizations/LinalgCanonicalizations.h"
@@ -81,6 +82,7 @@
 #include "lib/Transforms/PopulateScale/PopulateScale.h"
 #include "lib/Transforms/PropagateAnnotation/PropagateAnnotation.h"
 #include "lib/Transforms/RotationDecompose/RotationDecompose.h"
+#include "lib/Transforms/RotationDepthAnalysis/RotationDepthAnalysis.h"
 #include "lib/Transforms/SecretInsertMgmt/Passes.h"
 #include "lib/Transforms/Secretize/Passes.h"
 #include "lib/Transforms/SelectRewrite/SelectRewrite.h"
@@ -285,6 +287,8 @@ int main(int argc, char **argv) {
   registerTensorLinalgToAffineLoops();
   registerMergeEvalKeysPasses();
   registerRotationDecomposePasses();
+  registerRotationDepthAnalysisPasses();
+  registerKeyCompressionPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS
 #ifndef HEIR_ABC_BINARY

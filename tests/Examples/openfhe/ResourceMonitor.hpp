@@ -51,6 +51,7 @@ class ResourceMonitor {
       monitor_thread_.join();
     }
   }
+  ~ResourceMonitor() { stop(); }
 
   // Mark the start of a named event
   void mark_event_start(const std::string& name) {

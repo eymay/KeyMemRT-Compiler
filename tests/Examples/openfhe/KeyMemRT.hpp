@@ -1,6 +1,7 @@
 #ifndef KEY_MANAGER_H_
 #define KEY_MANAGER_H_
 
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -8,6 +9,7 @@
 #include <string>
 
 #include "cryptocontext.h"
+#include "openfhe.h"
 
 #ifndef KEYMEMRT_LOGGER_H_
 #define KEYMEMRT_LOGGER_H_
@@ -19,6 +21,75 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+
+using namespace lbcrypto;
+
+/**
+ * Compresses evaluation/rotation keys to the specified level
+ * @param ek Map of evaluation keys to compress
+ * @param level Number of RNS components to drop from the end (if positive)
+ *        OR target level to keep (if negative)
+ */
+void CompressEvalKeysToLevel(std::map<usint, EvalKey<DCRTPoly>>& ek,
+                             int level) {
+  for (auto& keyPair : ek) {
+    auto evalKey = keyPair.second;
+
+    // Skip if the key is null
+    if (!evalKey) continue;
+
+    // Get the current A and B vectors
+    std::vector<DCRTPoly> a = evalKey->GetAVector();
+    std::vector<DCRTPoly> b = evalKey->GetBVector();
+
+    // Skip empty keys
+    if (a.empty() || b.empty()) continue;
+
+    // Get the current size (number of towers)
+    size_t currentSize = a[0].GetParams()->GetParams().size();
+
+    // Calculate how many elements to drop
+    size_t elementsToDrop = 0;
+
+    if (level >= 0) {
+      // Level is positive: directly specifies number of elements to drop
+      elementsToDrop = level;
+    } else {
+      // Level is negative: specifies target level to keep
+      int targetLevel = -level;
+      if (targetLevel > 0 && static_cast<size_t>(targetLevel) < currentSize) {
+        elementsToDrop = currentSize - targetLevel;
+      }
+    }
+
+    // Safety check: don't drop all towers
+    if (elementsToDrop >= currentSize) {
+      std::cout << "Cannot drop " + std::to_string(elementsToDrop) +
+                       " elements from a key with only " +
+                       std::to_string(currentSize) +
+                       " towers. Skipping compression.";
+      continue;
+    }
+
+    // Skip if no elements to drop
+    if (elementsToDrop == 0) continue;
+
+    std::cout << "Compressing key: dropping " + std::to_string(elementsToDrop) +
+                     " elements from " + std::to_string(currentSize) +
+                     " towers";
+
+    // Perform compression by dropping elements
+    for (size_t k = 0; k < a.size(); k++) {
+      a[k].DropLastElements(elementsToDrop);
+      b[k].DropLastElements(elementsToDrop);
+    }
+
+    // Update the key with compressed vectors
+    evalKey->ClearKeys();
+    evalKey->SetAVector(std::move(a));
+    evalKey->SetBVector(std::move(b));
+  }
+}
 
 enum class LogLevel {
   DEBUG,
@@ -386,36 +457,77 @@ class KeyMemRT {
     }
   }
 
-  bool serializeKey(int rotationIndex) {
+  bool serializeKeysAtDepth(const std::vector<int32_t>& indices, int depth) {
     if (operationMode == KeyMemMode::IGNORE) {
-      LOG_DEBUG("IGNORE mode: Skipping serialize for rotation index {}",
-                rotationIndex);
+      LOG_DEBUG("IGNORE mode: Skipping serialize keys at depth {}", depth);
       return true;
     }
 
-    auto automorphismIndex = getAutomorphismIndex(rotationIndex);
-    std::string filename = getKeyFilename(rotationIndex);
-    LOG_INFO("Serializing key for rotation index {} (automorphism {}) to {}",
-             rotationIndex, automorphismIndex, filename);
+    LOG_INFO("Serializing keys at depth {}", depth);
 
-    std::ofstream keyFile(filename, std::ios::binary);
-    if (!keyFile) {
-      LOG_ERROR("Failed to open file for writing: {}", filename);
+    // Important: Get keys BEFORE attempting to compress them
+    auto allKeys = cc->GetEvalAutomorphismKeyMap(keyTag);
+
+    // If no keys are found, we can't proceed
+    if (allKeys.empty()) {
+      LOG_ERROR("No evaluation keys found for key tag [{}]", keyTag);
       return false;
     }
 
-    bool result = cc->SerializeEvalAutomorphismKey(keyFile, SerType::BINARY,
-                                                   keyTag, {automorphismIndex});
-    if (result) {
-      LOG_INFO("Successfully serialized key for rotation index {}",
-               rotationIndex);
-    } else {
-      LOG_ERROR("Failed to serialize key for rotation index {}", rotationIndex);
+    // Now compress the keys
+    bool success = true;
+
+    // Now compress and serialize each key individually
+    for (int32_t rotIndex : indices) {
+      auto automorphismIndex = cc->FindAutomorphismIndex(rotIndex);
+
+      // Verify the key exists before trying to compress/serialize it
+      if (allKeys.find(automorphismIndex) == allKeys.end()) {
+        LOG_ERROR("Key not found for rotation index {} (automorphism {})",
+                  rotIndex, automorphismIndex);
+        success = false;
+        continue;
+      }
+
+      // Create a map with just this one key
+      std::map<usint, EvalKey<DCRTPoly>> keyToSerialize;
+      keyToSerialize[automorphismIndex] = allKeys[automorphismIndex];
+
+      // Compress just this key
+      CompressEvalKeysToLevel(keyToSerialize, depth);
+
+      // Now serialize the compressed key
+      std::string filename = getKeyFilename(rotIndex, depth);
+      LOG_INFO(
+          "Serializing key for rotation index {} (automorphism {}) at depth {} "
+          "to {}",
+          rotIndex, automorphismIndex, depth, filename);
+
+      std::ofstream keyFile(filename, std::ios::binary);
+      if (!keyFile) {
+        LOG_ERROR("Failed to open file for writing: {}", filename);
+        success = false;
+        continue;
+      }
+
+      bool result = cc->SerializeEvalAutomorphismKey(
+          keyFile, SerType::BINARY, keyTag, {automorphismIndex});
+
+      if (result) {
+        LOG_INFO(
+            "Successfully serialized key for rotation index {} at depth {}",
+            rotIndex, depth);
+      } else {
+        LOG_ERROR("Failed to serialize key for rotation index {} at depth {}",
+                  rotIndex, depth);
+        success = false;
+      }
     }
-    return result;
+
+    return success;
   }
 
-  bool deserializeKey(int rotationIndex) {
+  bool deserializeKey(int rotationIndex, int keyDepth) {
     if (operationMode == KeyMemMode::IGNORE) {
       LOG_DEBUG("IGNORE mode: Skipping deserialize for rotation index {}",
                 rotationIndex);
@@ -423,10 +535,19 @@ class KeyMemRT {
     }
 
     auto automorphismIndex = getAutomorphismIndex(rotationIndex);
-    std::string filename = getKeyFilename(rotationIndex);
-    LOG_INFO(
-        "Deserializing key for rotation index {} (automorphism {}) from {}",
-        rotationIndex, automorphismIndex, filename);
+
+    std::string filename;
+
+    filename = getKeyFilename(rotationIndex, keyDepth);
+    std::ifstream testFile(filename);
+    if (!testFile.good()) {
+      LOG_ERROR("Could not find any depth file for rotation index {}",
+                rotationIndex);
+      return false;
+    }
+
+    LOG_INFO("Deserializing key for rotation index {} at depth {} from {}",
+             rotationIndex, keyDepth, filename);
 
     std::ifstream keyFile(filename, std::ios::binary);
     if (!keyFile) {
@@ -438,16 +559,34 @@ class KeyMemRT {
         keyFile, SerType::BINARY, keyTag, {automorphismIndex});
 
     if (success) {
-      LOG_INFO("Successfully deserialized key for rotation index {}",
-               rotationIndex);
-      // Track loaded keys
+      LOG_INFO(
+          "Successfully deserialized key for rotation index {} at depth {}",
+          rotationIndex, keyDepth);
       loadedKeys.insert(rotationIndex);
     } else {
-      LOG_ERROR("Failed to deserialize key for rotation index {}",
-                rotationIndex);
+      LOG_ERROR("Failed to deserialize key for rotation index {} at depth {}",
+                rotationIndex, keyDepth);
     }
 
     return success;
+  }
+
+  // Add overload for backward compatibility
+  bool serializeKey(int rotationIndex) {
+    return serializeKeysAtDepth({rotationIndex}, 0);
+  }
+  bool deserializeKey(int rotationIndex) {
+    return deserializeKey(rotationIndex, 0);
+  }
+
+  // Helper to get depth-specific filename
+  std::string getKeyFilename(int rotationIndex, int depth) const {
+    if (depth == 0) {
+      return "/tmp/rotation_key_" + std::to_string(rotationIndex) + ".bin";
+    } else {
+      return "/tmp/rotation_key_" + std::to_string(rotationIndex) + "_d" +
+             std::to_string(depth) + ".bin";
+    }
   }
 
   bool clearKey(int rotationIndex) {

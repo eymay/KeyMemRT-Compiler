@@ -13,9 +13,11 @@ constexpr std::string_view kSourceRelativeOpenfheImport = R"cpp(
 )cpp";
 constexpr std::string_view kInstallationRelativeOpenfheImport = R"cpp(
 #include "openfhe/pke/openfhe.h"  // from @openfhe
+#include "KeyMemRT.hpp"
 )cpp";
 constexpr std::string_view kEmbeddedOpenfheImport = R"cpp(
 #include "openfhe.h"
+#include "KeyMemRT.hpp"
 )cpp";
 
 // clang-format off

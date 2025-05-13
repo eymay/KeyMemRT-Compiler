@@ -20,7 +20,8 @@ TEST(DotProduct8FTest, RunTest) {
   ResourceMonitor monitor;
   monitor.start();
   CCParamsT params;
-  params.SetMultiplicativeDepth(40);
+  int depth = 4;
+  params.SetMultiplicativeDepth(depth);
   CryptoContextT cryptoContext = GenCryptoContext(params);
   cryptoContext->Enable(PKE);
   cryptoContext->Enable(KEYSWITCH);
@@ -29,7 +30,9 @@ TEST(DotProduct8FTest, RunTest) {
   auto publicKey = keyPair.publicKey;
   auto secretKey = keyPair.secretKey;
 
-  auto mode = KeyMemMode::IGNORE;
+  Logger::getInstance().setLogLevel(LogLevel::DEBUG);
+  Logger::getInstance().setLogToConsole(true);
+  auto mode = KeyMemMode::IMPERATIVE;
   keymem_rt.setKeyMemMode(mode);
   cryptoContext =
       dot_product__configure_crypto_context(cryptoContext, secretKey);

@@ -33,7 +33,7 @@ def openfhe_lib(name, mlir_src, generated_lib_header, cc_lib_target_name, heir_o
         heir_opt(
             name = heir_opt_name,
             src = mlir_src,
-            pass_flags = heir_opt_flags + ["--merge-eval-keys", "--rotation-decompose=python-script=/home/eymen/Documents/keymemrt_project/heir/lib/Transforms/RotationDecompose/rotation_optimizer.py", "--merge-eval-keys"],
+            pass_flags = heir_opt_flags,
             generated_filename = generated_heir_opt_name,
             data = data,
         )
