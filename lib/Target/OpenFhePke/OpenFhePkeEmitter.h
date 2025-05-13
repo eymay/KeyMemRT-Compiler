@@ -122,6 +122,7 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(GenContextOp op);
   LogicalResult printOperation(GenMulKeyOp op);
   LogicalResult printOperation(GenRotKeyOp op);
+  LogicalResult printOperation(GenRotKeyDepthOp op);
   LogicalResult printOperation(GenBootstrapKeyOp op);
   LogicalResult printOperation(KeySwitchOp op);
   LogicalResult printOperation(LevelReduceOp op);

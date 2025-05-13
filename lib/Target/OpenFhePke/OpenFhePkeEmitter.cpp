@@ -271,7 +271,7 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
                 ModReduceOp, LevelReduceOp, RotOp, DeserializeKeyOp,
                 SerializeKeyOp, ClearKeyOp, AutomorphOp, KeySwitchOp, EncryptOp,
                 DecryptOp, GenParamsOp, GenContextOp, GenMulKeyOp, GenRotKeyOp,
-                GenBootstrapKeyOp, MakePackedPlaintextOp,
+                GenRotKeyDepthOp, GenBootstrapKeyOp, MakePackedPlaintextOp,
                 MakeCKKSPackedPlaintextOp, SetupBootstrapOp, BootstrapOp>(
               [&](auto op) { return printOperation(op); })
           .Default([&](Operation &) {
@@ -672,12 +672,25 @@ LogicalResult OpenFhePkeEmitter::printOperation(SerializeKeyOp op) {
 
 LogicalResult OpenFhePkeEmitter::printOperation(DeserializeKeyOp op) {
   auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
-  // auto contextName = variableNames->getNameForValue(op.getCryptoContext());
 
-  os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+  // Check if we have a key_depth attribute
+  if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
+    int64_t depth = depthAttr.getInt();
+    if (depth > 0) {
+      // If depth > 0, pass it as an argument
+      os << "keymem_rt.deserializeKey(" << rotationIndex << ", " << depth
+         << ");\n";
+    } else {
+      // If depth = 0, use the normal call
+      os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+    }
+  } else {
+    // Default to normal call if no depth attribute
+    os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+  }
+
   return success();
 }
-
 LogicalResult OpenFhePkeEmitter::printOperation(ClearKeyOp op) {
   auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
   // auto contextName = variableNames->getNameForValue(op.getCryptoContext());
@@ -1494,6 +1507,52 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenRotKeyOp op) {
   os << "  std::cerr << \"Failed to serialize rotation keys\" << std::endl;\n";
   os << "}\n";
   os << "keymem_rt.clearAllKeys();\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(openfhe::GenRotKeyDepthOp op) {
+  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+  auto privateKeyName = variableNames->getNameForValue(op.getPrivateKey());
+  int64_t depth = op.getDepth();
+
+  // Extract indices
+  SmallVector<int64_t, 8> indices;
+  if (auto arrayAttr = dyn_cast<ArrayAttr>(op.getIndices())) {
+    for (Attribute attr : arrayAttr) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+        indices.push_back(intAttr.getInt());
+      }
+    }
+  } else if (auto denseAttr = dyn_cast<DenseI64ArrayAttr>(op.getIndices())) {
+    ArrayRef<int64_t> valueRef = denseAttr;
+    indices.append(valueRef.begin(), valueRef.end());
+  }
+
+  os << "  // Generate rotation keys at depth " << depth << "\n";
+  os << "  const std::vector<int32_t> rotIndices_depth_" << depth << " = {";
+  bool first = true;
+  for (int64_t idx : indices) {
+    if (!first) os << ", ";
+    os << idx;
+    first = false;
+  }
+  os << "};\n";
+
+  os << "  std::cout << \"Generating keys at depth " << depth
+     << "\" << std::endl;\n";
+  os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
+     << ", rotIndices_depth_" << depth << ");\n";
+  if (printKeyMemRTConfig(os, contextName, privateKeyName, indices).failed())
+    return failure();
+  // Serialize keys at this depth
+  os << "  // Serialize keys at depth " << depth << "\n";
+  os << "  if (!keymem_rt.serializeKeysAtDepth(rotIndices_depth_" << depth
+     << ", " << depth << ")) {\n";
+  os << "    std::cerr << \"Failed to serialize rotation keys at depth "
+     << depth << "\" << std::endl;\n";
+  os << "  }\n";
+  os << "  " << contextName << "->ClearEvalAutomorphismKeys();\n\n";
+
   return success();
 }
 

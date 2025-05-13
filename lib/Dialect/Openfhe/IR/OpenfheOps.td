@@ -130,6 +130,21 @@ def GenRotKeyOp : Openfhe_Op<"gen_rotkey"> {
   );
 }
 
+def GenRotKeyDepthOp : Openfhe_Op<"gen_rotkey_depth"> {
+  let summary = "Generate rotation keys at a specific depth";
+  let description = [{
+    This operation generates rotation keys for the specified indices at a given depth.
+    It allows for efficient key generation where keys are only created at depths where they are needed.
+  }];
+  
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Openfhe_PrivateKey:$privateKey,
+    ArrayAttr:$indices,
+    I64Attr:$depth
+  );
+}
+
 def SetupBootstrapOp : Openfhe_Op<"setup_bootstrap"> {
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
