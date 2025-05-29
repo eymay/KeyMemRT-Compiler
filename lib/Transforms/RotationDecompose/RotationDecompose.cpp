@@ -16,6 +16,7 @@
 
 #include "lib/Analysis/RotationKeyLivenessAnalysis/RotationKeyLivenessAnalysis.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
+#include "llvm/include/llvm/Support/Debug.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/include/mlir/IR/Builders.h"
@@ -27,10 +28,12 @@
 // Include for getting process ID
 #include <unistd.h>
 
+#define DEBUG_TYPE "rotation-decompose"
+
 namespace mlir {
 namespace heir {
 
-constexpr bool verbose = true;
+constexpr bool verbose = false;
 
 namespace {
 
@@ -195,10 +198,10 @@ parseJsonOutput(const std::string &jsonOutput, int64_t baseSetSize) {
   }
 
   // Validate that we got the expected base set size
-  if (baseSet.size() != baseSetSize) {
-    llvm::errs() << "Warning: Expected base set size " << baseSetSize
+  LLVM_DEBUG(if (baseSet.size() != baseSetSize) {
+    llvm::dbgs() << "Warning: Expected base set size " << baseSetSize
                  << " but got " << baseSet.size() << "\n";
-  }
+  });
 
   return {baseSet, decompositions};
 }
@@ -406,12 +409,13 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     }
 
     // Output some statistics
-    llvm::outs()
-        << "RotationDecompose Pass: Successfully optimized with base set: ";
-    for (int64_t idx : baseSet) {
-      llvm::outs() << idx << " ";
-    }
-    llvm::outs() << "\n";
+    LLVM_DEBUG(
+        std::string optimizationMethod =
+            useSimpleBsgs ? "simple BSGS" : "advanced MIP";
+        llvm::dbgs() << "RotationDecompose Pass: Successfully optimized with "
+                     << optimizationMethod << " using base set: ";
+        for (int64_t idx : baseSet) { llvm::dbgs() << idx << " "; } llvm::dbgs()
+        << "\n";);
     // op->print(llvm::outs(), OpPrintingFlags().printGenericOpForm());
   }
 
@@ -420,18 +424,19 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
   void collectRotationIndices(Operation *op, std::set<int64_t> &indices) {
     // Walk through the IR and collect all rotation indices from
     // DeserializeKeyOp
-    llvm::outs() << "Scanning for rotation indices...\n";
+    LLVM_DEBUG(llvm::dbgs() << "Scanning for rotation indices...\n";);
     op->walk([&](openfhe::DeserializeKeyOp deserOp) {
       if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
         int64_t index = indexAttr.getInt();
         if (indices.insert(index).second) {
-          llvm::outs() << "Found rotation index: " << index << "\n";
+          LLVM_DEBUG(llvm::dbgs()
+                         << "Found rotation index: " << index << "\n";);
         }
       }
     });
 
-    llvm::outs() << "Total unique rotation indices found: " << indices.size()
-                 << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "Total unique rotation indices found: "
+                            << indices.size() << "\n";);
   }
 
   // Create JSON input for Python optimizer
@@ -466,10 +471,12 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     // Write to temp file
     std::string inputFile = writeTempFile(jsonInput);
     std::string outputFile = inputFile + "_output";
-    llvm::errs() << "Current working directory: "
-                 << std::filesystem::current_path() << "\n";
-    llvm::errs() << "Python script path: " << pythonScript << "\n";
-    // Run Python optimizer
+
+    LLVM_DEBUG(llvm::dbgs() << "Current working directory: "
+                            << std::filesystem::current_path() << "\n";);
+    LLVM_DEBUG(llvm::dbgs() << "Python script path: " << pythonScript << "\n";);
+
+    // Build command
     std::string cmd =
         ". /home/eymen/Documents/keymemrt_project/heir/.venv/bin/activate;  "
         "python3 " +

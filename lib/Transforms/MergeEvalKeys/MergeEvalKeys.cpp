@@ -2,6 +2,9 @@
 
 #include "lib/Analysis/RotationKeyLivenessAnalysis/RotationKeyLivenessAnalysis.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
+#include "llvm/include/llvm/Support/Debug.h"  // from @llvm-project
+
+#define DEBUG_TYPE "merge-eval-keys"
 
 namespace mlir {
 namespace heir {
@@ -82,8 +85,8 @@ struct MergeEvalKeys : impl::MergeEvalKeysBase<MergeEvalKeys> {
     }
 
     // Print statistics
-    llvm::outs() << "MergeEvalKeys: Completed in " << iterationCount
-                 << " iterations\n";
+    LLVM_DEBUG(llvm::dbgs() << "MergeEvalKeys: Completed in " << iterationCount
+                            << " iterations\n";);
   }
 
  private:
@@ -229,9 +232,10 @@ struct MergeEvalKeys : impl::MergeEvalKeysBase<MergeEvalKeys> {
               result.realDistance = realDistance;
               result.totalDistance = totalOps;
 
-              llvm::outs() << "Found optimal pair for key index " << keyIndex
-                           << " with real distance " << realDistance
-                           << " (total ops: " << totalOps << ")\n";
+              LLVM_DEBUG(llvm::dbgs()
+                             << "Found optimal pair for key index " << keyIndex
+                             << " with real distance " << realDistance
+                             << " (total ops: " << totalOps << ")\n";);
               return result;
             }
           }
