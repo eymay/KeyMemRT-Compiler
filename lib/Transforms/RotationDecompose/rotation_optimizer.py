@@ -838,6 +838,104 @@ class AdditionGraphMIPOptimizer:
         # Return the base numbers used
         return sorted(dependencies[target],reverse=True)
 
+def simple_bsgs_optimization(target_numbers, verbose=False):
+    """
+    Apply simple BSGS optimization to target numbers.
+    This ignores user-specified constraints and automatically determines
+    the optimal BSGS parameters based on the target numbers.
+    
+    Args:
+        target_numbers: List of integers to be reached
+        verbose: Whether to print detailed information
+        
+    Returns:
+        base_elements: List of base elements
+        decompositions: Dictionary mapping target -> decomposition
+        unreachable: Set of unreachable targets
+        total_steps: Total steps needed
+    """
+    if verbose:
+        print(f"Using simple BSGS optimization (automatic parameter selection)")
+    
+    # For simple BSGS, we identify ALL contiguous ranges regardless of minimum length
+    # This is the mathematically optimal approach for BSGS
+    ranges = identify_ranges(target_numbers, min_range_length=2, verbose=verbose)
+    
+    if not ranges:
+        if verbose:
+            print("No suitable ranges found, treating individual targets with standard BSGS")
+        # For individual targets, use them directly as base elements
+        # This is the mathematically correct approach for sparse indices
+        base_elements = sorted(list(set(target_numbers)), reverse=True)
+        
+        # Each target decomposes to itself (trivial decomposition)
+        decompositions = {}
+        for target in target_numbers:
+            decompositions[target] = [target]
+        
+        unreachable = set()  # All targets are reachable
+        total_steps = 0  # No decomposition steps needed
+        
+        if verbose:
+            print(f"Using {len(base_elements)} individual base elements")
+        
+        return base_elements, decompositions, unreachable, total_steps
+    
+    # Apply standard BSGS to each range without size constraints
+    base_elements = []
+    decompositions = {}
+    
+    for start, end in ranges:
+        if verbose:
+            print(f"Applying BSGS to range [{start}, {end}]")
+        
+        range_base_elements, range_decompositions = apply_bsgs_to_range(start, end, verbose)
+        base_elements.extend(range_base_elements)
+        decompositions.update(range_decompositions)
+    
+    # Remove duplicates while preserving order
+    base_elements = list(dict.fromkeys(base_elements))
+
+    for target, decomp in decompositions.items():
+        if decomp is not None and isinstance(decomp, list):
+            decompositions[target] = sorted(decomp, reverse=True)
+    
+    # Handle targets not covered by ranges (individual targets)
+    range_covered = set()
+    for start, end in ranges:
+        range_covered.update(range(start, end + 1))
+    
+    remaining_targets = [t for t in target_numbers if t not in range_covered]
+    
+    # For remaining individual targets, add them directly to base set
+    for target in remaining_targets:
+        if target not in base_elements:
+            base_elements.append(target)
+        decompositions[target] = [target]
+    
+    # Calculate metrics
+    unreachable = set()  # Simple BSGS should make all targets reachable
+    total_steps = sum(len(decomp) - 1 if decomp else 0 for decomp in decompositions.values())
+    
+    if verbose:
+        print(f"Simple BSGS optimization completed:")
+        print(f"  Base set size: {len(base_elements)} (automatically determined)")
+        print(f"  Coverage: 100% ({len(target_numbers)}/{len(target_numbers)})")
+        print(f"  Total steps: {total_steps}")
+        print(f"  Base elements: {sorted(base_elements)}")
+        
+        # Show range analysis
+        if ranges:
+            print(f"  Processed {len(ranges)} contiguous ranges:")
+            for start, end in ranges:
+                range_size = end - start + 1
+                m = int(math.ceil(math.sqrt(range_size)))
+                estimated_base_elements = len(range(1, m)) + len(range(1, (range_size // m) + 1))
+                print(f"    Range [{start}, {end}]: {range_size} elements -> ~{estimated_base_elements} base elements")
+    
+    return base_elements, decompositions, unreachable, total_steps
+
+
 def process_input(input_data, verbose=False):
     """
     Process input data and run the optimization.
@@ -854,31 +952,39 @@ def process_input(input_data, verbose=False):
     base_size = input_data.get('base_size', 3)
     max_chain_length = input_data.get('max_chain_length', 5)
     saturated_bsgs = input_data.get('saturated_bsgs', True)
+    use_simple_bsgs = input_data.get('use_simple_bsgs', False)
     min_range_length = input_data.get('min_range_length', 3)
 
-    # Create optimizer
-    optimizer = AdditionGraphMIPOptimizer(target_numbers, max_chain_length, verbose)
-    
-    # Run appropriate optimization method
-    if saturated_bsgs:
+    if use_simple_bsgs:
         if verbose:
-            print("Using saturated BSGS with MIP optimization")
-            
-        base_set, decompositions, unreachable, total_steps = optimizer.optimize_with_saturated_bsgs_and_mip(
-            base_size, min_range_length)
+            print("Using simple BSGS optimization (ignoring base_size and min_range_length parameters)")
+        
+        base_set, decompositions, unreachable, total_steps = simple_bsgs_optimization(
+            target_numbers, verbose)
     else:
-        # Run standard MIP optimization
-        if verbose:
-            print("Using standard MIP optimization")
-            
-        base_set, total_steps, unreachable = optimizer.solve_with_mip(
-            base_size, include_non_targets=True)
-            
-    # Get decompositions for each target number
-    if base_set:
-        decompositions = optimizer.get_decomposition(base_set)
-    else:
-        decompositions = {}
+        # Create optimizer
+        optimizer = AdditionGraphMIPOptimizer(target_numbers, max_chain_length, verbose)
+        
+        # Run appropriate optimization method
+        if saturated_bsgs:
+            if verbose:
+                print("Using saturated BSGS with MIP optimization")
+                
+            base_set, decompositions, unreachable, total_steps = optimizer.optimize_with_saturated_bsgs_and_mip(
+                base_size, min_range_length)
+        else:
+            # Run standard MIP optimization
+            if verbose:
+                print("Using standard MIP optimization")
+                
+            base_set, total_steps, unreachable = optimizer.solve_with_mip(
+                base_size, include_non_targets=True)
+                
+        # Get decompositions for each target number
+        if base_set:
+            decompositions = optimizer.get_decomposition(base_set)
+        else:
+            decompositions = {}
     
     # Convert dict to a list format for JSON
     decomposition_list = []
@@ -888,8 +994,13 @@ def process_input(input_data, verbose=False):
             'target': target,
             'decomposition': decomp
         })
-    print("Decomposition list")
-    print(decomposition_list)
+    
+    if verbose:
+        print("Decomposition list:")
+        for item in decomposition_list[:10]:  # Show first 10
+            print(f"  {item}")
+        if len(decomposition_list) > 10:
+            print(f"  ... and {len(decomposition_list) - 10} more")
     
     # Convert unreachable set to list for JSON serialization
     unreachable_list = list(unreachable) if unreachable is not None else []
@@ -906,6 +1017,7 @@ def process_input(input_data, verbose=False):
     
     return result
 
+
 def main():
     """
     Main function to handle command line arguments and stdin/stdout.
@@ -916,6 +1028,8 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='Print verbose output')
     parser.add_argument('--saturated-bsgs', action='store_true', 
                     help='Use saturated BSGS to better utilize memory')
+    parser.add_argument('--simple-bsgs', action='store_true',
+                    help='Use simple BSGS instead of advanced optimization')
     parser.add_argument('--min-range', type=int, default=3, 
                     help='Minimum length of range to apply BSGS')
     args = parser.parse_args()
@@ -932,6 +1046,9 @@ def main():
     if args.saturated_bsgs:
         input_data['saturated_bsgs'] = True
     
+    if args.simple_bsgs:
+        input_data['use_simple_bsgs'] = True
+        
     if args.min_range is not None:
         input_data['min_range_length'] = args.min_range
     

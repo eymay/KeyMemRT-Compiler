@@ -455,7 +455,15 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     ss << "  \"base_size\": " << baseSetSize << ",\n";
     ss << "  \"max_chain_length\": " << maxChainLength << ",\n";
     ss << "  \"include_non_targets\": true,\n";
-    ss << "  \"saturated-bsgs\": true,\n";
+
+    // Add the simple BSGS option
+    if (useSimpleBsgs) {
+      ss << "  \"use_simple_bsgs\": true,\n";
+      ss << "  \"min_range_length\": " << minRangeLength << ",\n";
+    } else {
+      ss << "  \"saturated-bsgs\": true,\n";
+    }
+
     ss << "  \"time_limit\": " << timeLimit << "\n";
     ss << "}\n";
 
@@ -481,6 +489,13 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
         ". /home/eymen/Documents/keymemrt_project/heir/.venv/bin/activate;  "
         "python3 " +
         pythonScript + " --input " + inputFile + " --output " + outputFile;
+
+    // Add simple BSGS flag if enabled
+    if (useSimpleBsgs) {
+      cmd += " --simple-bsgs";
+    } else {
+      cmd += " --saturated-bsgs";
+    }
 
     if (verbose) {
       cmd += " --verbose";
