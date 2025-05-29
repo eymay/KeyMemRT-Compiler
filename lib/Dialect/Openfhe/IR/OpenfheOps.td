@@ -394,20 +394,53 @@ def ClearKeyOp : Openfhe_Op<"clear_key"> {
 def CompressKeyOp : Openfhe_Op<"compress_key"> {
   let summary = "Compress a rotation key to reduce memory usage";
   let description = [{
-    Takes an evaluation key and compresses it to reduce memory usage, returning the
-    compressed key which can still be used in operations.
-
+    Takes an evaluation key and compresses it to a specified depth to reduce memory usage, 
+    returning the compressed key which can still be used in operations. The compressed key 
+    maintains the same rotation index as the original key but with reduced depth.
+    
     Example:
     ```mlir
-    %compressed_ek = openfhe.compress_key %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key -> !openfhe.eval_key
+    %compressed_ek = openfhe.compress_key %cc, %ek { depth = 5 } : !openfhe.crypto_context, !openfhe.eval_key -> !openfhe.eval_key
     ```
   }];
-
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
-    Openfhe_EvalKey:$evalKey
+    Openfhe_EvalKey:$evalKey,
+    I32Attr:$depth
   );
   let results = (outs Openfhe_EvalKey:$resultKey);
+  
+  let assemblyFormat = [{
+    $cryptoContext `,` $evalKey attr-dict `:` type($cryptoContext) `,` type($evalKey) `->` type($resultKey)
+  }];
+}
+
+
+// In-Place Constant Multiplication (this definitely exists)
+def MulConstInPlaceOp : Openfhe_Op<"mul_const_inplace"> {
+  let summary = "In-place multiplication of ciphertext and integer constant";
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext,
+    I64:$constant
+  );
+}
+
+// In-Place Unary Operations (these definitely exist)
+def NegateInPlaceOp : Openfhe_Op<"negate_inplace"> {
+  let summary = "In-place negation of a ciphertext";
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext
+  );
+}
+
+def RelinInPlaceOp : Openfhe_Op<"relin_inplace"> {
+  let summary = "In-place relinearization of a ciphertext";
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext
+  );
 }
 
 #endif  // LIB_DIALECT_OPENFHE_IR_OPENFHEOPS_TD_

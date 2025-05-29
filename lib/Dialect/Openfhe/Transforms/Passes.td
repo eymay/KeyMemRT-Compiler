@@ -72,4 +72,28 @@ def CountAddAndKeySwitch : Pass<"openfhe-count-add-and-key-switch"> {
   }];
 }
 
+def ConvertToInPlace : Pass<"openfhe-convert-to-inplace"> {
+  let summary = "Convert OpenFHE operations to their in-place equivalents";
+  let description = [{
+    This pass converts OpenFHE operations that return new values to their
+    in-place equivalents that modify the first operand instead. This can
+    help optimize memory usage by avoiding unnecessary copies.
+
+    For example:
+    ```mlir
+    %result = openfhe.add %cc, %lhs, %rhs : (!openfhe.crypto_context, !lwe.lwe_ciphertext, !lwe.lwe_ciphertext) -> !lwe.lwe_ciphertext
+    ```
+    
+    Becomes:
+    ```mlir
+    openfhe.add_inplace %cc, %lhs, %rhs : (!openfhe.crypto_context, !lwe.lwe_ciphertext, !lwe.lwe_ciphertext)
+    // %lhs is now modified to contain %lhs + %rhs
+    ```
+
+    The pass only applies the transformation when it's safe to do so,
+    typically when the result has only one use.
+  }];
+  let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
+}
+
 #endif  // LIB_DIALECT_OPENFHE_TRANSFORMS_PASSES_TD_

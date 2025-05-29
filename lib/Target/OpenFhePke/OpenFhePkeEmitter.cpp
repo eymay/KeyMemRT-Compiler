@@ -269,11 +269,14 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           .Case<AddOp, AddPlainOp, SubOp, SubPlainOp, MulNoRelinOp, MulOp,
                 MulPlainOp, SquareOp, NegateOp, MulConstOp, RelinOp,
                 ModReduceOp, LevelReduceOp, RotOp, DeserializeKeyOp,
-                SerializeKeyOp, ClearKeyOp, AutomorphOp, KeySwitchOp, EncryptOp,
-                DecryptOp, GenParamsOp, GenContextOp, GenMulKeyOp, GenRotKeyOp,
-                GenRotKeyDepthOp, GenBootstrapKeyOp, MakePackedPlaintextOp,
-                MakeCKKSPackedPlaintextOp, SetupBootstrapOp, BootstrapOp>(
+                SerializeKeyOp, ClearKeyOp, CompressKeyOp, AutomorphOp,
+                KeySwitchOp, EncryptOp, DecryptOp, GenParamsOp, GenContextOp,
+                GenMulKeyOp, GenRotKeyOp, GenRotKeyDepthOp, GenBootstrapKeyOp,
+                MakePackedPlaintextOp, MakeCKKSPackedPlaintextOp,
+                SetupBootstrapOp, BootstrapOp>(
               [&](auto op) { return printOperation(op); })
+          .Case<AddInPlaceOp, SubInPlaceOp, MulConstInPlaceOp, NegateInPlaceOp,
+                RelinInPlaceOp>([&](auto op) { return printOperation(op); })
           .Default([&](Operation &) {
             return emitError(op.getLoc(), "unable to find printer for op");
           });
@@ -537,9 +540,16 @@ void OpenFhePkeEmitter::emitAutoAssignPrefix(Value result) {
   // If the result values are iter args of a region, then avoid using a auto
   // assign prefix.
   if (!mutableValues.contains(result)) {
-    //  Use const auto& because most OpenFHE API methods would
-    // perform a copy if using a plain `auto`.
-    os << "const auto& ";
+    // Check if this is a ciphertext type that might need to be mutable
+    if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(
+            result.getType())) {
+      // For ciphertext types, use auto instead of const auto& to allow in-place
+      // operations
+      os << "auto ";
+    } else {
+      // For other types (contexts, keys, etc.), use const auto& as before
+      os << "const auto& ";
+    }
   }
   os << variableNames->getNameForValue(result) << " = ";
 }
@@ -700,10 +710,13 @@ LogicalResult OpenFhePkeEmitter::printOperation(ClearKeyOp op) {
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(CompressKeyOp op) {
-  emitAutoAssignPrefix(op.getResultKey());
   auto evalKeyName = variableNames->getNameForValue(op.getEvalKey());
-  // TODO get the openfhe code first
-  return failure();
+  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
+  auto depthAttr = op->getAttrOfType<IntegerAttr>("depth");
+
+  os << "keymem_rt.compressKey(" << rotationIndex << "," << depthAttr.getInt()
+     << ");\n";
+  return success();
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(AutomorphOp op) {
@@ -1573,6 +1586,46 @@ LogicalResult OpenFhePkeEmitter::printOperation(SetupBootstrapOp op) {
   os << op.getLevelBudgetDecode().getValue();
   os << "});\n";
   return success();
+}
+
+// Helper method for in-place operations
+LogicalResult OpenFhePkeEmitter::printInPlaceEvalMethod(
+    ::mlir::Value cryptoContext, ::mlir::ValueRange operands,
+    std::string_view op) {
+  os << variableNames->getNameForValue(cryptoContext) << "->" << op << "(";
+  os << commaSeparatedValues(operands, [&](Value value) {
+    return variableNames->getNameForValue(value);
+  });
+  os << ");\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(AddInPlaceOp op) {
+  return printInPlaceEvalMethod(op.getCryptoContext(),
+                                {op.getLhs(), op.getRhs()}, "EvalAddInPlace");
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(SubInPlaceOp op) {
+  return printInPlaceEvalMethod(op.getCryptoContext(),
+                                {op.getLhs(), op.getRhs()}, "EvalSubInPlace");
+}
+
+// Constant operations (these work!)
+LogicalResult OpenFhePkeEmitter::printOperation(MulConstInPlaceOp op) {
+  return printInPlaceEvalMethod(op.getCryptoContext(),
+                                {op.getCiphertext(), op.getConstant()},
+                                "EvalMultInPlace");
+}
+
+// Unary operations
+LogicalResult OpenFhePkeEmitter::printOperation(NegateInPlaceOp op) {
+  return printInPlaceEvalMethod(op.getCryptoContext(), {op.getCiphertext()},
+                                "EvalNegateInPlace");
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(RelinInPlaceOp op) {
+  return printInPlaceEvalMethod(op.getCryptoContext(), {op.getCiphertext()},
+                                "RelinearizeInPlace");
 }
 
 LogicalResult OpenFhePkeEmitter::emitType(Type type, Location loc,

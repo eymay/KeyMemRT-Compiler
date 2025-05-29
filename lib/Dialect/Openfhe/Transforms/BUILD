@@ -12,6 +12,7 @@ cc_library(
     ],
     deps = [
         ":ConfigureCryptoContext",
+        ":ConvertToInPlace",
         ":CountAddAndKeySwitch",
         ":pass_inc_gen",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
@@ -57,6 +58,23 @@ cc_library(
         "@llvm-project//mlir:Analysis",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
+    ],
+)
+
+cc_library(
+    name = "ConvertToInPlace",
+    srcs = ["ConvertToInPlace.cpp"],
+    hdrs = [
+        "ConvertToInPlace.h",
+    ],
+    deps = [
+        ":pass_inc_gen",
+        "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:Transforms",
     ],
 )
 

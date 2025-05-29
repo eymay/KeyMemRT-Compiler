@@ -144,6 +144,11 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(SquareOp op);
   LogicalResult printOperation(SubOp op);
   LogicalResult printOperation(SubPlainOp op);
+  LogicalResult printOperation(AddInPlaceOp op);
+  LogicalResult printOperation(SubInPlaceOp op);
+  LogicalResult printOperation(MulConstInPlaceOp op);
+  LogicalResult printOperation(NegateInPlaceOp op);
+  LogicalResult printOperation(RelinInPlaceOp op);
 
   // Helpers for above
   LogicalResult printEvalMethod(::mlir::Value result,
@@ -152,7 +157,9 @@ class OpenFhePkeEmitter {
                                 std::string_view op);
   LogicalResult printBinaryOp(Operation *op, ::mlir::Value lhs,
                               ::mlir::Value rhs, std::string_view opName);
-
+  LogicalResult printInPlaceEvalMethod(::mlir::Value cryptoContext,
+                                       ::mlir::ValueRange operands,
+                                       std::string_view op);
   // A helper for a special case of ExtractSliceOp
   LogicalResult extractRowFromMatrix(tensor::ExtractSliceOp op);
 
