@@ -1481,12 +1481,10 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenMulKeyOp op) {
 }
 
 LogicalResult printKeyMemRTConfig(raw_indented_ostream &os, StringRef cc,
-                                  StringRef pk, ArrayRef<int64_t> rotIndices) {
+                                  StringRef pk) {
   os << "keymem_rt.setCryptoContext(" << cc << ");\n";
   os << "keymem_rt.setKeyTag(" << pk << "->GetKeyTag());\n";
-  os << "keymem_rt.setRotIndices({";
-  llvm::interleaveComma(rotIndices, os, [&](int64_t value) { os << value; });
-  os << "});\n";
+  os << "keymem_rt.setRotIndices(rotIndices);\n";
   return success();
 }
 
@@ -1498,11 +1496,12 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenRotKeyOp op) {
   llvm::interleaveComma(op.getIndices(), os,
                         [&](int64_t value) { os << value; });
   os << "};\n\n";
+  if (printKeyMemRTConfig(os, contextName, privateKeyName).failed())
+    return failure();
+  os << " if(keymem_rt.getPlatform() == Platform::SERVER)\n";
+  os << "   return cc;\n";
   os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
      << ", rotIndices);\n\n";
-  if (printKeyMemRTConfig(os, contextName, privateKeyName, op.getIndices())
-          .failed())
-    return failure();
   os << "if (!keymem_rt.serializeAllKeys()) {\n";
   os << "  std::cerr << \"Failed to serialize rotation keys\" << std::endl;\n";
   os << "}\n";
@@ -1542,8 +1541,8 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::GenRotKeyDepthOp op) {
      << "\" << std::endl;\n";
   os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
      << ", rotIndices_depth_" << depth << ");\n";
-  if (printKeyMemRTConfig(os, contextName, privateKeyName, indices).failed())
-    return failure();
+  // if (printKeyMemRTConfig(os, contextName, privateKeyName).failed())
+  //   return failure();
   // Serialize keys at this depth
   os << "  // Serialize keys at depth " << depth << "\n";
   os << "  if (!keymem_rt.serializeKeysAtDepth(rotIndices_depth_" << depth
