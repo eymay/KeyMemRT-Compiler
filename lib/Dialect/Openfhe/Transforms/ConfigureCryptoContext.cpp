@@ -287,7 +287,13 @@ struct ConfigureCryptoContext
   SmallVector<int64_t> findAllRotIndices(func::FuncOp op) {
     std::set<int64_t> distinctRotIndices;
     op.walk([&](openfhe::RotOp rotOp) {
-      distinctRotIndices.insert(rotOp.getEvalKey().getType().getRotationIndex().getInt());
+      distinctRotIndices.insert(
+          rotOp.getEvalKey().getType().getRotationIndex().getInt());
+      return WalkResult::advance();
+    });
+    op.walk([&](openfhe::RotInPlaceOp rotOp) {
+      distinctRotIndices.insert(
+          rotOp.getEvalKey().getType().getRotationIndex().getInt());
       return WalkResult::advance();
     });
     SmallVector<int64_t> rotIndicesResult(distinctRotIndices.begin(),

@@ -415,6 +415,35 @@ def CompressKeyOp : Openfhe_Op<"compress_key"> {
   }];
 }
 
+// In-Place Plaintext Operations
+def AddPlainInPlaceOp : Openfhe_Op<"add_plain_inplace"> {
+  let summary = "In-place addition of ciphertext and plaintext";
+  let description = [{
+    Performs in-place homomorphic addition of a ciphertext and plaintext,
+    modifying the ciphertext operand in place.
+  }];
+  
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext,
+    NewLWEPlaintext:$plaintext
+  );
+}
+
+def SubPlainInPlaceOp : Openfhe_Op<"sub_plain_inplace"> {
+  let summary = "In-place subtraction of plaintext from ciphertext";
+  let description = [{
+    Performs in-place homomorphic subtraction (ciphertext - plaintext),
+    modifying the ciphertext operand in place.
+  }];
+  
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext,
+    NewLWEPlaintext:$plaintext
+  );
+}
+
 
 // In-Place Constant Multiplication (this definitely exists)
 def MulConstInPlaceOp : Openfhe_Op<"mul_const_inplace"> {
@@ -440,6 +469,58 @@ def RelinInPlaceOp : Openfhe_Op<"relin_inplace"> {
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
     NewLWECiphertext:$ciphertext
+  );
+}
+
+// In-place rotation operation (self-assignment style)
+def RotInPlaceOp : Openfhe_Op<"rot_inplace"> {
+  let summary = "In-place rotation operation that modifies the input ciphertext";
+  let description = [{
+    Performs rotation in-place, modifying the input ciphertext. This operation
+    is used to model self-assignment in C++ code generation:
+    `ciphertext = cc->EvalRotate(ciphertext, index);`
+    
+    This operation maintains SSA form in MLIR while enabling optimized C++ emission.
+  }];
+  
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext,
+    Openfhe_EvalKey:$evalKey
+  );
+}
+
+// In-place multiplication operation (self-assignment style)  
+def MulInPlaceOp : Openfhe_Op<"mul_inplace"> {
+  let summary = "In-place multiplication operation that modifies the first ciphertext";
+  let description = [{
+    Performs multiplication in-place, modifying the first input ciphertext. This operation
+    is used to model self-assignment in C++ code generation:
+    `ciphertext1 = cc->EvalMult(ciphertext1, ciphertext2);`
+    
+    This operation maintains SSA form in MLIR while enabling optimized C++ emission.
+  }];
+  
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$lhs,
+    NewLWECiphertext:$rhs
+  );
+}
+
+// In-place multiplication with plaintext (self-assignment style)
+def MulPlainInPlaceOp : Openfhe_Op<"mul_plain_inplace"> {
+  let summary = "In-place multiplication of ciphertext and plaintext";
+  let description = [{
+    Performs multiplication with plaintext in-place, modifying the input ciphertext.
+    This operation is used to model self-assignment in C++ code generation:
+    `ciphertext = cc->EvalMult(ciphertext, plaintext);`
+  }];
+  
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext,
+    NewLWEPlaintext:$plaintext
   );
 }
 

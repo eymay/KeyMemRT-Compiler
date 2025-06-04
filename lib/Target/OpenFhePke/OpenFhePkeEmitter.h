@@ -146,9 +146,14 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(SubPlainOp op);
   LogicalResult printOperation(AddInPlaceOp op);
   LogicalResult printOperation(SubInPlaceOp op);
+  LogicalResult printOperation(AddPlainInPlaceOp op);
+  LogicalResult printOperation(SubPlainInPlaceOp op);
   LogicalResult printOperation(MulConstInPlaceOp op);
   LogicalResult printOperation(NegateInPlaceOp op);
   LogicalResult printOperation(RelinInPlaceOp op);
+  LogicalResult printOperation(RotInPlaceOp op);
+  LogicalResult printOperation(MulInPlaceOp op);
+  LogicalResult printOperation(MulPlainInPlaceOp op);
 
   // Helpers for above
   LogicalResult printEvalMethod(::mlir::Value result,

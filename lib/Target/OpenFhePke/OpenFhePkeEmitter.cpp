@@ -275,8 +275,10 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
                 MakePackedPlaintextOp, MakeCKKSPackedPlaintextOp,
                 SetupBootstrapOp, BootstrapOp>(
               [&](auto op) { return printOperation(op); })
-          .Case<AddInPlaceOp, SubInPlaceOp, MulConstInPlaceOp, NegateInPlaceOp,
-                RelinInPlaceOp>([&](auto op) { return printOperation(op); })
+          .Case<AddPlainInPlaceOp, SubPlainInPlaceOp, AddInPlaceOp,
+                SubInPlaceOp, MulConstInPlaceOp, NegateInPlaceOp,
+                RelinInPlaceOp, RotInPlaceOp, MulInPlaceOp, MulPlainInPlaceOp>(
+              [&](auto op) { return printOperation(op); })
           .Default([&](Operation &) {
             return emitError(op.getLoc(), "unable to find printer for op");
           });
@@ -1600,6 +1602,18 @@ LogicalResult OpenFhePkeEmitter::printInPlaceEvalMethod(
   return success();
 }
 
+LogicalResult OpenFhePkeEmitter::printOperation(AddPlainInPlaceOp op) {
+  return printInPlaceEvalMethod(op.getCryptoContext(),
+                                {op.getCiphertext(), op.getPlaintext()},
+                                "EvalAddInPlace");
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(SubPlainInPlaceOp op) {
+  return printInPlaceEvalMethod(op.getCryptoContext(),
+                                {op.getCiphertext(), op.getPlaintext()},
+                                "EvalSubInPlace");
+}
+
 LogicalResult OpenFhePkeEmitter::printOperation(AddInPlaceOp op) {
   return printInPlaceEvalMethod(op.getCryptoContext(),
                                 {op.getLhs(), op.getRhs()}, "EvalAddInPlace");
@@ -1626,6 +1640,42 @@ LogicalResult OpenFhePkeEmitter::printOperation(NegateInPlaceOp op) {
 LogicalResult OpenFhePkeEmitter::printOperation(RelinInPlaceOp op) {
   return printInPlaceEvalMethod(op.getCryptoContext(), {op.getCiphertext()},
                                 "RelinearizeInPlace");
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(RotInPlaceOp op) {
+  // Emit self-assignment: ciphertext = cc->EvalRotate(ciphertext, index);
+  auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
+  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
+
+  os << ciphertextName << " = " << contextName << "->EvalRotate("
+     << ciphertextName << ", " << rotationIndex << ");\n";
+
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(MulInPlaceOp op) {
+  // Emit self-assignment: lhs = cc->EvalMult(lhs, rhs);
+  auto lhsName = variableNames->getNameForValue(op.getLhs());
+  auto rhsName = variableNames->getNameForValue(op.getRhs());
+  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+
+  os << lhsName << " = " << contextName << "->EvalMult(" << lhsName << ", "
+     << rhsName << ");\n";
+
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(MulPlainInPlaceOp op) {
+  // Emit self-assignment: ciphertext = cc->EvalMult(ciphertext, plaintext);
+  auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
+  auto plaintextName = variableNames->getNameForValue(op.getPlaintext());
+  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+
+  os << ciphertextName << " = " << contextName << "->EvalMult("
+     << ciphertextName << ", " << plaintextName << ");\n";
+
+  return success();
 }
 
 LogicalResult OpenFhePkeEmitter::emitType(Type type, Location loc,
