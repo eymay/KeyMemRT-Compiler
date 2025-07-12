@@ -126,6 +126,7 @@ cc_binary(
         "@heir//lib/Transforms/MergeEvalKeys",
         "@heir//lib/Transforms/RotationDepthAnalysis",
         "@heir//lib/Transforms/KeyCompression",
+        "@heir//lib/Transforms/LowerLinearTransform",
         "@heir//lib/Transforms/OperationBalancer",
         "@heir//lib/Transforms/OptimizeRelinearization",
         "@heir//lib/Transforms/PolynomialApproximation",

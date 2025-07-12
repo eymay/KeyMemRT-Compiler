@@ -230,4 +230,66 @@ def CKKS_BootstrapOp : CKKS_Op<"bootstrap"> {
   let assemblyFormat = "operands attr-dict `:` qualified(type($input)) `->` qualified(type($output))" ;
 }
 
+def CKKS_LinearTransformOp : CKKS_Op<"linear_transform"> {
+  let summary = "Linear transformation operation using precomputed diagonal plaintexts";
+  let description = [{
+    This operation performs a linear transformation using precomputed diagonal plaintexts.
+    It's commonly used in homomorphic encryption to implement matrix-vector multiplication
+    or convolution operations efficiently using the diagonal method and rotations.
+    
+    The operation takes a ciphertext input and plaintext weights (diagonals) as inputs,
+    and produces a ciphertext result representing the linear transformation.
+    
+    Attributes:
+    - block_row, block_col: Block matrix coordinates for block-wise operations
+    - diagonal_count: Number of diagonals used in the transformation
+    - slots: Number of SIMD slots in the ciphertext
+    - bsgs_ratio: Baby-step giant-step optimization ratio
+    - orion_level: FHE level for noise management
+    
+    Example:
+    ```mlir
+    %result = ckks.linear_transform %input, %weights {
+      block_row = 0 : i32, 
+      block_col = 0 : i32, 
+      diagonal_count = 128 : i32, 
+      slots = 4096 : i32, 
+      bsgs_ratio = 2.0 : f32, 
+      orion_level = 5 : i32
+    } : (!ct, !pt) -> !ct
+    ```
+  }];
+
+  let arguments = (ins
+    NewLWECiphertext:$input,
+    NewLWEPlaintext:$weights,
+    
+    // Block matrix coordinates
+    DefaultValuedAttr<I32Attr, "0">:$block_row,
+    DefaultValuedAttr<I32Attr, "0">:$block_col,
+    
+    // Diagonal parameters
+    DefaultValuedAttr<I32Attr, "128">:$diagonal_count,
+    DefaultValuedAttr<I32Attr, "4096">:$slots,
+    
+    // Optimization parameters
+    DefaultValuedAttr<F32Attr, "2.0">:$bsgs_ratio,
+    DefaultValuedAttr<I32Attr, "5">:$orion_level,
+    
+    // Optional matrix dimensions
+    OptionalAttr<I32Attr>:$matrix_rows,
+    OptionalAttr<I32Attr>:$matrix_cols,
+    
+    // Optional BSGS parameters
+    OptionalAttr<I32Attr>:$baby_step_size,
+    OptionalAttr<I32Attr>:$giant_step_size
+  );
+
+  let results = (outs
+    NewLWECiphertext:$output
+  );
+
+  let assemblyFormat = "$input `,` $weights attr-dict `:` `(` type($input) `,` type($weights) `)` `->` type($output)" ;
+}
+
 #endif  // LIB_DIALECT_CKKS_IR_CKKSOPS_TD_

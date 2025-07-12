@@ -74,6 +74,7 @@
 #include "lib/Transforms/LayoutOptimization/LayoutOptimization.h"
 #include "lib/Transforms/LayoutPropagation/LayoutPropagation.h"
 #include "lib/Transforms/LinalgCanonicalizations/LinalgCanonicalizations.h"
+#include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 #include "lib/Transforms/LowerPolynomialEval/LowerPolynomialEval.h"
 #include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h"
 #include "lib/Transforms/OperationBalancer/OperationBalancer.h"
@@ -289,6 +290,7 @@ int main(int argc, char **argv) {
   registerRotationDecomposePasses();
   registerRotationDepthAnalysisPasses();
   registerKeyCompressionPasses();
+  registerLowerLinearTransformPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS
 #ifndef HEIR_ABC_BINARY
