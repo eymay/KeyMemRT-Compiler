@@ -14,6 +14,7 @@ cc_library(
         ":ConfigureCryptoContext",
         ":ConvertToInPlace",
         ":CountAddAndKeySwitch",
+        ":InsertCiphertextClears",
         ":pass_inc_gen",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
     ],
@@ -75,6 +76,23 @@ cc_library(
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:Transforms",
+    ],
+)
+
+cc_library(
+    name = "InsertCiphertextClears",
+    srcs = ["InsertCiphertextClears.cpp"],
+    hdrs = [
+        "InsertCiphertextClears.h",
+    ],
+    deps = [
+        ":pass_inc_gen",
+        "@heir//lib/Dialect/LWE/IR:Dialect",
+        "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
     ],
 )
 

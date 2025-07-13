@@ -96,4 +96,24 @@ def ConvertToInPlace : Pass<"openfhe-convert-to-inplace"> {
   let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
 }
 
+def InsertCiphertextClears : Pass<"openfhe-insert-ciphertext-clears"> {
+  let summary = "Insert ciphertext clear operations to reduce memory usage";
+  let description = [{
+    This pass analyzes the lifetime of ciphertext values and inserts clear operations
+    at points where ciphertexts are no longer needed. This helps reduce memory usage
+    in large FHE applications by explicitly releasing ciphertext memory.
+
+    The pass performs a simple liveness analysis to determine when a ciphertext
+    value is last used and inserts a clear operation immediately after that use.
+
+    This optimization is particularly beneficial for:
+    - Large computation graphs with many intermediate ciphertexts
+    - Functions with long sequences of operations where intermediate results
+      can be freed early
+    - Memory-constrained environments where FHE ciphertext memory usage
+      is a bottleneck
+  }];
+  let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
+}
+
 #endif  // LIB_DIALECT_OPENFHE_TRANSFORMS_PASSES_TD_

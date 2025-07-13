@@ -524,6 +524,26 @@ def MulPlainInPlaceOp : Openfhe_Op<"mul_plain_inplace"> {
   );
 }
 
+def ClearCtOp : Openfhe_Op<"clear_ct"> {
+  let summary = "Clear a ciphertext from memory to reduce memory usage";
+  let description = [{
+    Takes a ciphertext and clears it from memory by calling reset() on the underlying 
+    shared pointer. This helps manage memory usage by explicitly releasing ciphertext 
+    data when it's no longer needed.
+
+    This operation should be inserted at points where the compiler can determine that
+    a ciphertext's lifetime has ended and it will not be used again.
+
+    Example:
+    ```mlir
+    openfhe.clear_ct %ct : !lwe.lwe_ciphertext
+    ```
+  }];
+
+  let arguments = (ins
+    NewLWECiphertext:$ciphertext
+  );
+}
 
 def Openfhe_ChebyshevOp : Openfhe_Op<"chebyshev"> {
   let summary = "OpenFHE Chebyshev polynomial evaluation operation.";
