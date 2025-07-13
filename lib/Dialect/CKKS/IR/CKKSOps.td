@@ -292,4 +292,39 @@ def CKKS_LinearTransformOp : CKKS_Op<"linear_transform"> {
   let assemblyFormat = "$input `,` $weights attr-dict `:` `(` type($input) `,` type($weights) `)` `->` type($output)" ;
 }
 
+def CKKS_ChebyshevOp : CKKS_Op<"chebyshev"> {
+  let summary = "Evaluate a Chebyshev polynomial series on a ciphertext.";
+
+  let description = [{
+    Evaluates a Chebyshev polynomial series on a ciphertext using pre-computed
+    coefficients. This operation directly maps to OpenFHE's EvalChebyshevSeries.
+    
+    The coefficients correspond to the Chebyshev series:
+    f(x) = c₀T₀(x) + c₁T₁(x) + c₂T₂(x) + ... + cₙTₙ(x)
+    
+    where Tᵢ(x) are Chebyshev polynomials of the first kind.
+    
+    Example:
+    ```mlir
+    %result = ckks.chebyshev %input {
+        coefficients = [1.0, 0.0, -0.33333, 0.0, 0.2],
+        domain_start = -1.0,
+        domain_end = 1.0
+    } : (!lwe.new_lwe_ciphertext) -> !lwe.new_lwe_ciphertext
+    ```
+  }];
+
+  let arguments = (ins
+    NewLWECiphertext:$input,
+    F64ArrayAttr:$coefficients,
+    DefaultValuedAttr<F64Attr, "-1.0">:$domain_start,
+    DefaultValuedAttr<F64Attr, "1.0">:$domain_end
+  );
+
+  let results = (outs
+    NewLWECiphertext:$output
+  );
+
+}
+
 #endif  // LIB_DIALECT_CKKS_IR_CKKSOPS_TD_

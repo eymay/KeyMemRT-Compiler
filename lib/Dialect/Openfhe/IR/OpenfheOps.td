@@ -524,4 +524,28 @@ def MulPlainInPlaceOp : Openfhe_Op<"mul_plain_inplace"> {
   );
 }
 
+
+def Openfhe_ChebyshevOp : Openfhe_Op<"chebyshev"> {
+  let summary = "OpenFHE Chebyshev polynomial evaluation operation.";
+  
+  let description = [{
+    Evaluates a Chebyshev polynomial series using OpenFHE's EvalChebyshevSeries.
+    This operation takes a crypto context, input ciphertext, coefficients,
+    and domain bounds to evaluate the polynomial.
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$crypto_context,
+    NewLWECiphertext:$input,
+    F64ArrayAttr:$coefficients,
+    F64Attr:$domain_start,
+    F64Attr:$domain_end
+  );
+
+  let results = (outs
+    NewLWECiphertext:$output
+  );
+
+}
+
 #endif  // LIB_DIALECT_OPENFHE_IR_OPENFHEOPS_TD_

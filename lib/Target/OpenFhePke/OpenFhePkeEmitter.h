@@ -154,6 +154,7 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(RotInPlaceOp op);
   LogicalResult printOperation(MulInPlaceOp op);
   LogicalResult printOperation(MulPlainInPlaceOp op);
+  LogicalResult printOperation(ChebyshevOp op);
 
   // Helpers for above
   LogicalResult printEvalMethod(::mlir::Value result,

@@ -290,6 +290,30 @@ struct ConvertBootstrapOp : public OpConversionPattern<ckks::BootstrapOp> {
     return success();
   }
 };
+
+struct ConvertChebyshevOp : public OpConversionPattern<ckks::ChebyshevOp> {
+  ConvertChebyshevOp(mlir::MLIRContext *context)
+      : OpConversionPattern<ckks::ChebyshevOp>(context) {}
+
+  using OpConversionPattern<ckks::ChebyshevOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      ckks::ChebyshevOp op, ckks::ChebyshevOp::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    FailureOr<Value> result = getContextualCryptoContext(op.getOperation());
+    if (failed(result)) return result;
+
+    Value cryptoContext = result.value();
+
+    // Convert the operation directly - all attributes are preserved
+    rewriter.replaceOpWithNewOp<openfhe::ChebyshevOp>(
+        op, op.getOutput().getType(), cryptoContext, adaptor.getInput(),
+        op.getCoefficientsAttr(), op.getDomainStartAttr(),
+        op.getDomainEndAttr());
+
+    return success();
+  }
+};
 }  // namespace
 
 struct LWEToOpenfhe : public impl::LWEToOpenfheBase<LWEToOpenfhe> {
@@ -425,7 +449,7 @@ struct LWEToOpenfhe : public impl::LWEToOpenfheBase<LWEToOpenfhe> {
         lwe::ConvertLevelReduceOp<bgv::LevelReduceOp>,
         lwe::ConvertLevelReduceOp<ckks::LevelReduceOp>,
         // Bootstrap (CKKS only)
-        ConvertBootstrapOp
+        ConvertBootstrapOp, ConvertChebyshevOp
         // End of Pattern List
         >(typeConverter, context);
 

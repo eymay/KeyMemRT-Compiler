@@ -269,12 +269,12 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           .Case<AddOp, AddPlainOp, SubOp, SubPlainOp, MulNoRelinOp, MulOp,
                 MulPlainOp, SquareOp, NegateOp, MulConstOp, RelinOp,
                 ModReduceOp, LevelReduceOp, RotOp, DeserializeKeyOp,
-                SerializeKeyOp, ClearKeyOp, CompressKeyOp, AutomorphOp,
-                KeySwitchOp, EncryptOp, DecryptOp, GenParamsOp, GenContextOp,
-                GenMulKeyOp, GenRotKeyOp, GenRotKeyDepthOp, GenBootstrapKeyOp,
-                MakePackedPlaintextOp, MakeCKKSPackedPlaintextOp,
-                SetupBootstrapOp, BootstrapOp>(
-              [&](auto op) { return printOperation(op); })
+                SerializeKeyOp, ClearKeyOp, CompressKeyOp, ClearCtOp,
+                AutomorphOp, KeySwitchOp, EncryptOp, DecryptOp, GenParamsOp,
+                GenContextOp, GenMulKeyOp, GenRotKeyOp, GenRotKeyDepthOp,
+                GenBootstrapKeyOp, MakePackedPlaintextOp,
+                MakeCKKSPackedPlaintextOp, SetupBootstrapOp, BootstrapOp,
+                ChebyshevOp>([&](auto op) { return printOperation(op); })
           .Case<AddPlainInPlaceOp, SubPlainInPlaceOp, AddInPlaceOp,
                 SubInPlaceOp, MulConstInPlaceOp, NegateInPlaceOp,
                 RelinInPlaceOp, RotInPlaceOp, MulInPlaceOp, MulPlainInPlaceOp>(
@@ -1674,6 +1674,55 @@ LogicalResult OpenFhePkeEmitter::printOperation(MulPlainInPlaceOp op) {
 
   os << ciphertextName << " = " << contextName << "->EvalMult("
      << ciphertextName << ", " << plaintextName << ");\n";
+
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(ClearCtOp op) {
+  auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
+
+  os << "// Clear ciphertext to free memory\n";
+  os << ciphertextName << ".reset();\n";
+
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(openfhe::ChebyshevOp op) {
+  auto cryptoContext = op.getCryptoContext();
+  auto input = op.getInput();
+  auto coefficients = op.getCoefficients();
+  auto domainStart = op.getDomainStart();
+  auto domainEnd = op.getDomainEnd();
+
+  // Generate variable names using the correct emitter methods
+  auto inputName = variableNames->getNameForValue(input);
+  auto outputName = variableNames->getNameForValue(op.getOutput());
+  auto contextName = variableNames->getNameForValue(cryptoContext);
+
+  // Convert coefficients array to C++ vector
+  os << "std::vector<double> coeffs_" << outputName << " = {";
+
+  auto coeffArray = coefficients.getValue();
+  for (auto it = coeffArray.begin(); it != coeffArray.end(); ++it) {
+    if (it != coeffArray.begin()) os << ", ";
+
+    if (auto floatAttr = mlir::dyn_cast<FloatAttr>(*it)) {
+      // Use the correct method to extract double value
+      os << floatAttr.getValueAsDouble();
+    } else {
+      return op.emitError("Expected float attribute in coefficients array");
+    }
+  }
+  os << "};\n";
+
+  // Extract domain bounds using the correct method
+  double a = domainStart.convertToDouble();
+  double b = domainEnd.convertToDouble();
+
+  // Generate the OpenFHE API call
+  os << "auto " << outputName << " = " << contextName
+     << "->EvalChebyshevSeries(" << inputName << ", coeffs_" << outputName
+     << ", " << a << ", " << b << ");\n";
 
   return success();
 }
