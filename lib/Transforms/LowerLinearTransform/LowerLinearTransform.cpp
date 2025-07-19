@@ -9,15 +9,23 @@
 #include "lib/Dialect/Polynomial/IR/PolynomialAttributes.h"
 #include "lib/Dialect/RNS/IR/RNSTypes.h"
 #include "lib/Utils/Polynomial/Polynomial.h"
+#include "llvm/include/llvm/Support/Debug.h"
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/include/mlir/IR/Builders.h"
 #include "mlir/include/mlir/IR/PatternMatch.h"
 #include "mlir/include/mlir/Pass/Pass.h"
+#include "mlir/include/mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/include/mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace heir {
+
+// Attribute names for outlining markers
+static constexpr StringRef kLinearTransformStartAttr =
+    "heir.linear_transform_start";
+static constexpr StringRef kLinearTransformEndAttr =
+    "heir.linear_transform_end";
 
 // Helper to extract scaling factor from types
 static int64_t getScalingFactor(Type type) {
@@ -71,19 +79,22 @@ class LinearTransformLoweringPattern
     Value weightsPlaintext = op.getWeights();
     Type expectedResultType = op.getResult().getType();
 
+    static int transformId = 0;
+    int currentId = transformId++;
     // Extract scaling factors
     int64_t inputScale = getScalingFactor(inputCiphertext.getType());
     int64_t weightsScale = getScalingFactor(weightsPlaintext.getType());
     int64_t expectedResultScale = getScalingFactor(expectedResultType);
 
-    llvm::outs() << "Lowering linear_transform with " << diagonalCount
+    llvm::dbgs() << "Lowering linear_transform with " << diagonalCount
                  << " diagonals, " << slots << " slots\n";
-    llvm::outs() << "Input scale: " << inputScale
+    llvm::dbgs() << "Input scale: " << inputScale
                  << ", weights scale: " << weightsScale
                  << ", expected result scale: " << expectedResultScale << "\n";
 
     // Create operations for each diagonal
     SmallVector<Value> diagonalResults;
+    Operation *firstOp = nullptr;
 
     for (int32_t i = 0; i < diagonalCount; ++i) {
       // Step 1: Apply rotation if needed
@@ -105,6 +116,13 @@ class LinearTransformLoweringPattern
 
       Value mulResult = rewriter.create<ckks::MulPlainOp>(
           loc, mulResultType, rotatedInput, diagonal);
+      if (!firstOp) {
+        Operation *startOp =
+            (i == 0) ? diagonal.getDefiningOp() : rotatedInput.getDefiningOp();
+        startOp->setAttr(kLinearTransformStartAttr,
+                         rewriter.getI64IntegerAttr(currentId));
+        firstOp = startOp;
+      }
 
       diagonalResults.push_back(mulResult);
     }
@@ -117,19 +135,23 @@ class LinearTransformLoweringPattern
     int64_t actualResultScale = getScalingFactor(accumulated.getType());
 
     if (actualResultScale != expectedResultScale) {
-      llvm::outs() << "Scale mismatch: actual=" << actualResultScale
+      llvm::dbgs() << "Scale mismatch: actual=" << actualResultScale
                    << " vs expected=" << expectedResultScale << "\n";
-      llvm::outs() << "Using actual result (type consistency maintained)\n";
+      llvm::dbgs() << "Using actual result (type consistency maintained)\n";
 
       // For now, we'll use the accumulated result as-is
       // This preserves the actual scaling behavior of the operations
       finalResult = accumulated;
     }
+    if (finalResult) {
+      finalResult.getDefiningOp()->setAttr(
+          kLinearTransformEndAttr, rewriter.getI64IntegerAttr(currentId));
+    }
 
     // Replace the operation
     rewriter.replaceOp(op, finalResult);
 
-    llvm::outs() << "Successfully lowered linear_transform\n";
+    llvm::dbgs() << "Successfully lowered linear_transform\n";
     return success();
   }
 
@@ -138,17 +160,17 @@ class LinearTransformLoweringPattern
                         int32_t diagonalIdx, int32_t slots,
                         int64_t targetScale) const {
     // Create diagonal data
-    auto slotType = rewriter.getF32Type();
+    auto slotType = rewriter.getF64Type();
     auto tensorType = RankedTensorType::get({slots}, slotType);
 
-    SmallVector<float> diagonalData;
+    SmallVector<double> diagonalData;
     for (int32_t j = 0; j < slots; ++j) {
-      float value = 0.1f * (diagonalIdx + 1) * (j % 4 + 1);
+      double value = 0.1f * (diagonalIdx + 1) * (j % 4 + 1);
       diagonalData.push_back(value);
     }
 
     auto diagonalAttr =
-        DenseElementsAttr::get(tensorType, ArrayRef<float>(diagonalData));
+        DenseElementsAttr::get(tensorType, ArrayRef<double>(diagonalData));
     Value diagonalConst = rewriter.create<arith::ConstantOp>(loc, diagonalAttr);
 
     // Create encoding with target scaling factor
@@ -219,7 +241,7 @@ struct LowerLinearTransform
       return;
     }
 
-    llvm::outs() << "Linear transform lowering completed\n";
+    llvm::dbgs() << "Linear transform lowering completed\n";
 
     // Step 2: Propagate type changes through the program
     bool madeChanges = true;
@@ -229,7 +251,7 @@ struct LowerLinearTransform
       madeChanges = false;
       iteration++;
 
-      llvm::outs() << "Type propagation iteration " << iteration << "\n";
+      llvm::dbgs() << "Type propagation iteration " << iteration << "\n";
 
       func.walk([&](Operation *op) {
         // Update rotate operations to match their input types
@@ -238,7 +260,7 @@ struct LowerLinearTransform
           Type resultType = rotateOp.getResult().getType();
 
           if (inputType != resultType) {
-            llvm::outs() << "  Updating rotate result type\n";
+            llvm::dbgs() << "  Updating rotate result type\n";
             rotateOp.getResult().setType(
                 cast<lwe::NewLWECiphertextType>(inputType));
             madeChanges = true;
@@ -259,7 +281,7 @@ struct LowerLinearTransform
           int64_t targetScale = std::max(lhsScale, rhsScale);
 
           if (resultScale != targetScale) {
-            llvm::outs() << "  Updating add result scale: " << resultScale
+            llvm::dbgs() << "  Updating add result scale: " << resultScale
                          << " -> " << targetScale << "\n";
             Type newResultType =
                 createTypeWithScalingFactor(resultType, targetScale, context);
@@ -270,29 +292,50 @@ struct LowerLinearTransform
         }
 
         // Update add_plain operations
+
         else if (auto addPlainOp = dyn_cast<ckks::AddPlainOp>(op)) {
-          Type ctType = addPlainOp.getLhs().getType();
-          Type resultType = addPlainOp.getResult().getType();
+          Value ciphertext, plaintext;
+          if (isa<lwe::NewLWECiphertextType>(addPlainOp.getLhs().getType())) {
+            ciphertext = addPlainOp.getLhs();
+            plaintext = addPlainOp.getRhs();
+          } else {
+            ciphertext = addPlainOp.getRhs();
+            plaintext = addPlainOp.getLhs();
+          }
 
-          int64_t ctScale = getScalingFactor(ctType);
-          int64_t resultScale = getScalingFactor(resultType);
+          int64_t ctScale = getScalingFactor(ciphertext.getType());
+          int64_t ptScale = getScalingFactor(plaintext.getType());
+          int64_t resultScale =
+              getScalingFactor(addPlainOp.getResult().getType());
 
+          // For add_plain, both operands must have the same scaling factor
+          if (ctScale != ptScale) {
+            llvm::dbgs() << "  Updating plaintext scale for add_plain: "
+                         << ptScale << " -> " << ctScale << "\n";
+
+            // Update the plaintext operand's type to match ciphertext scale
+            Type newPtType = createTypeWithScalingFactor(plaintext.getType(),
+                                                         ctScale, context);
+            plaintext.setType(cast<lwe::NewLWEPlaintextType>(newPtType));
+            madeChanges = true;
+          }
+
+          // Update result type to match ciphertext scale
           if (resultScale != ctScale) {
-            llvm::outs() << "  Updating add_plain result scale: " << resultScale
+            llvm::dbgs() << "  Updating add_plain result scale: " << resultScale
                          << " -> " << ctScale << "\n";
-            Type newResultType =
-                createTypeWithScalingFactor(resultType, ctScale, context);
+            Type newResultType = createTypeWithScalingFactor(
+                addPlainOp.getResult().getType(), ctScale, context);
             addPlainOp.getResult().setType(
                 cast<lwe::NewLWECiphertextType>(newResultType));
             madeChanges = true;
           }
         }
-
         // Update other operations as needed...
       });
     }
 
-    llvm::outs() << "Type propagation completed after " << iteration
+    llvm::dbgs() << "Type propagation completed after " << iteration
                  << " iterations\n";
   }
 };

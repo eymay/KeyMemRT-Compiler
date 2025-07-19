@@ -156,6 +156,9 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(MulPlainInPlaceOp op);
   LogicalResult printOperation(ClearCtOp op);
   LogicalResult printOperation(ChebyshevOp op);
+  LogicalResult printOperation(DeserializeGlobalKeyOp op);
+  LogicalResult printOperation(RotateGlobalOp op);
+  LogicalResult printOperation(ClearKeyGlobalOp op);
 
   // Helpers for above
   LogicalResult printEvalMethod(::mlir::Value result,
