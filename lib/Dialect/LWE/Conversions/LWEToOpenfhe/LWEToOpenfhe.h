@@ -44,6 +44,17 @@ struct ConvertUnaryOp : public OpConversionPattern<UnaryOp> {
   }
 };
 
+static void preserveLinearTransformAttrs(Operation *from, Operation *to) {
+  if (auto startAttr =
+          from->getAttrOfType<IntegerAttr>("heir.linear_transform_start")) {
+    to->setAttr("heir.linear_transform_start", startAttr);
+  }
+  if (auto endAttr =
+          from->getAttrOfType<IntegerAttr>("heir.linear_transform_end")) {
+    to->setAttr("heir.linear_transform_end", endAttr);
+  }
+}
+
 template <typename BinOp, typename OpenfheOp>
 struct ConvertLWEBinOp : public OpConversionPattern<BinOp> {
   using OpConversionPattern<BinOp>::OpConversionPattern;
@@ -55,9 +66,10 @@ struct ConvertLWEBinOp : public OpConversionPattern<BinOp> {
     if (failed(result)) return result;
 
     Value cryptoContext = result.value();
-    rewriter.replaceOpWithNewOp<OpenfheOp>(op, op.getOutput().getType(),
-                                           cryptoContext, adaptor.getLhs(),
-                                           adaptor.getRhs());
+    auto newOp = rewriter.replaceOpWithNewOp<OpenfheOp>(
+        op, op.getOutput().getType(), cryptoContext, adaptor.getLhs(),
+        adaptor.getRhs());
+    preserveLinearTransformAttrs(op.getOperation(), newOp.getOperation());
     return success();
   }
 };

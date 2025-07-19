@@ -246,8 +246,10 @@ struct ConvertEncodeOp : public OpConversionPattern<lwe::RLWEEncodeOp> {
 
     return llvm::TypeSwitch<Attribute, LogicalResult>(op.getEncoding())
         .Case<lwe::InverseCanonicalEncodingAttr>([&](auto encoding) {
-          rewriter.replaceOpWithNewOp<openfhe::MakeCKKSPackedPlaintextOp>(
-              op, plaintextType, cryptoContext, input);
+          auto newOp =
+              rewriter.replaceOpWithNewOp<openfhe::MakeCKKSPackedPlaintextOp>(
+                  op, plaintextType, cryptoContext, input);
+          preserveLinearTransformAttrs(op.getOperation(), newOp.getOperation());
           return success();
         })
         .Case<lwe::CoefficientEncodingAttr>([&](auto encoding) {
@@ -257,8 +259,10 @@ struct ConvertEncodeOp : public OpConversionPattern<lwe::RLWEEncodeOp> {
           return failure();
         })
         .Case<lwe::FullCRTPackingEncodingAttr>([&](auto encoding) {
-          rewriter.replaceOpWithNewOp<openfhe::MakePackedPlaintextOp>(
-              op, plaintextType, cryptoContext, input);
+          auto newOp =
+              rewriter.replaceOpWithNewOp<openfhe::MakePackedPlaintextOp>(
+                  op, plaintextType, cryptoContext, input);
+          preserveLinearTransformAttrs(op.getOperation(), newOp.getOperation());
           return success();
         })
         .Default([&](Attribute) -> LogicalResult {

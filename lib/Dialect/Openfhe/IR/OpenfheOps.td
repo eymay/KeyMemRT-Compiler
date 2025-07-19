@@ -568,4 +568,83 @@ def Openfhe_ChebyshevOp : Openfhe_Op<"chebyshev"> {
 
 }
 
+
+def DeserializeKeyGlobalOp : Openfhe_Op<"deserialize_key_global"> {
+  let summary = "Deserialize a rotation key globally without exposing it as an SSA value";
+  let description = [{
+    This operation deserializes a rotation key for a given index and stores it
+    globally within the crypto context, without returning an evaluation key as
+    an SSA value. This simplifies dataflow by handling keys opaquely.
+
+    The key is identified by its rotation index and can be used by subsequent
+    global rotation operations.
+
+    Example:
+    ```mlir
+    openfhe.deserialize_key_global %cc, 1 : !openfhe.crypto_context
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Builtin_IntegerAttr:$index
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $cryptoContext `,` $index attr-dict `:` type($cryptoContext)
+  }];
+}
+
+def RotateGlobalOp : Openfhe_Op<"rotate_global", [
+  Pure,
+  AllTypesMatch<["ciphertext", "output"]>
+]> {
+  let summary = "Rotate ciphertext using a globally stored evaluation key";
+  let description = [{
+    This operation performs rotation on a ciphertext using an evaluation key
+    that was previously deserialized globally. The key is identified by the
+    rotation index and retrieved from global storage within the crypto context.
+
+    Example:
+    ```mlir
+    %result = openfhe.rotate_global %cc, %ct, 1 : !openfhe.crypto_context, !openfhe.lwe_ciphertext -> !openfhe.lwe_ciphertext
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    NewLWECiphertext:$ciphertext,
+    Builtin_IntegerAttr:$rotationIndex
+  );
+  let results = (outs NewLWECiphertext:$output);
+
+  let assemblyFormat = [{
+    $cryptoContext `,` $ciphertext `,` $rotationIndex attr-dict `:` type($cryptoContext) `,` type($ciphertext) `->` type($output)
+  }];
+}
+
+def ClearKeyGlobalOp : Openfhe_Op<"clear_key_global"> {
+  let summary = "Clear a rotation key from global storage";
+  let description = [{
+    This operation clears a rotation key from the crypto context's global storage.
+    The key is identified by its rotation index. This helps manage memory usage
+    by removing keys when they're no longer needed.
+
+    Example:
+    ```mlir
+    openfhe.clear_key_global %cc, 1 : !openfhe.crypto_context
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Builtin_IntegerAttr:$index
+  );
+
+  let assemblyFormat = [{
+    $cryptoContext `,` $index attr-dict `:` type($cryptoContext)
+  }];
+}
+
 #endif  // LIB_DIALECT_OPENFHE_IR_OPENFHEOPS_TD_
