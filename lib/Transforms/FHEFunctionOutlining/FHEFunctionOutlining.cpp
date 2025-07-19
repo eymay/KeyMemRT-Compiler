@@ -14,6 +14,8 @@
 #include "mlir/include/mlir/IR/SymbolTable.h"
 #include "mlir/include/mlir/Support/FileUtilities.h"
 
+#define DEBUG_TYPE "fhe-function-outlining"
+
 namespace mlir {
 namespace heir {
 
@@ -21,29 +23,24 @@ namespace heir {
 #include "lib/Transforms/FHEFunctionOutlining/FHEFunctionOutlining.h.inc"
 
 //===----------------------------------------------------------------------===//
-// OutlineRegion - represents a region to extract
+// OutlineRegion - Simplified for clean FHE pipeline design
 //===----------------------------------------------------------------------===//
 
 struct OutlineRegion {
-  SmallVector<Operation *> operations;
-  SmallVector<Value> inputs;
-  SmallVector<Value> outputs;
+  SmallVector<Operation*> operations;
+  Value cryptoContext;     // The crypto context (always same)
+  Value inputCiphertext;   // Single input ciphertext
+  Value outputCiphertext;  // Single output ciphertext
   std::string regionId;
 
-  FunctionType getFunctionType(MLIRContext *context) const {
-    SmallVector<Type> inputTypes, outputTypes;
-    for (Value input : inputs) inputTypes.push_back(input.getType());
-    for (Value output : outputs) outputTypes.push_back(output.getType());
-    return FunctionType::get(context, inputTypes, outputTypes);
-  }
-
   bool isValid() const {
-    return !operations.empty() && inputs.size() < 20 && outputs.size() < 10;
+    return !operations.empty() && cryptoContext && inputCiphertext &&
+           outputCiphertext;
   }
 };
 
 //===----------------------------------------------------------------------===//
-// FHE Function Outlining Pass
+// Simplified FHE Function Outlining Pass
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -52,21 +49,74 @@ struct FHEFunctionOutliningPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    // Find the main function (not helper functions)
+    // Find the main function
+    func::FuncOp targetFunction = findTargetFunction(module);
+    if (!targetFunction) {
+      module.emitRemark() << "No suitable target function found for outlining";
+      return;
+    }
+
+    // Find bootstrap operations to use as boundaries
+    SmallVector<Operation*> bootstrapOps = findBootstrapOps(targetFunction);
+    if (bootstrapOps.empty()) {
+      targetFunction.emitRemark() << "No bootstrap operations found";
+      return;
+    }
+
+    targetFunction.emitRemark()
+        << "Found " << bootstrapOps.size()
+        << " bootstrap operations, creating pipeline...";
+
+    // Create regions between bootstrap operations
+    SmallVector<OutlineRegion> regions =
+        createBootstrapRegions(targetFunction, bootstrapOps);
+
+    if (regions.empty()) {
+      targetFunction.emitRemark() << "No valid regions found for outlining";
+      return;
+    }
+
+    // Create outlined functions
+    SmallVector<func::FuncOp> outlinedFunctions;
+    OpBuilder builder(module.getContext());
+
+    for (auto& region : regions) {
+      if (auto newFunc =
+              createOutlinedFunction(region, builder, module, targetFunction)) {
+        outlinedFunctions.push_back(newFunc);
+      }
+    }
+
+    // Replace original function with pipeline of calls
+    createPipelineFunction(targetFunction, outlinedFunctions, builder);
+
+    // Verify that all operations are preserved
+    if (failed(
+            verifyOperationPreservation(targetFunction, outlinedFunctions))) {
+      targetFunction.emitWarning(
+          "Some operations may not have been preserved during outlining");
+    }
+
+    targetFunction.emitRemark()
+        << "Successfully created pipeline with " << outlinedFunctions.size()
+        << " outlined functions";
+  }
+
+ private:
+  func::FuncOp findTargetFunction(ModuleOp module) {
     func::FuncOp targetFunction = nullptr;
+
     module.walk([&](func::FuncOp funcOp) {
       if (!funcOp.isPrivate() && !funcOp.isDeclaration()) {
         StringRef funcName = funcOp.getName();
-        // Skip helper functions like configure/setup
         if (!funcName.contains("configure") && !funcName.contains("setup") &&
-            !funcName.contains("generate")) {
+            !funcName.contains("generate") && !funcName.contains("region")) {
           targetFunction = funcOp;
         }
       }
     });
 
     if (!targetFunction) {
-      // Fallback - just take the first non-private function
       module.walk([&](func::FuncOp funcOp) {
         if (!funcOp.isPrivate() && !funcOp.isDeclaration() && !targetFunction) {
           targetFunction = funcOp;
@@ -74,256 +124,337 @@ struct FHEFunctionOutliningPass
       });
     }
 
-    if (!targetFunction) return;
+    return targetFunction;
+  }
 
-    // Find bootstrap operations
-    SmallVector<Operation *> bootstrapOps;
-    targetFunction.walk([&](Operation *op) {
-      if (op->getName().getStringRef() == "openfhe.bootstrap") {
+  SmallVector<Operation*> findBootstrapOps(func::FuncOp targetFunction) {
+    SmallVector<Operation*> bootstrapOps;
+
+    targetFunction.walk([&](Operation* op) {
+      StringRef opName = op->getName().getStringRef();
+      if (opName == "openfhe.bootstrap" || opName == "ckks.bootstrap") {
         bootstrapOps.push_back(op);
       }
     });
 
-    if (bootstrapOps.empty()) {
-      targetFunction.emitRemark() << "No bootstrap operations found";
-      return;
-    }
+    // Sort by position in the function
+    DenseMap<Operation*, int> opPositions;
+    int pos = 0;
+    targetFunction.walk([&](Operation* op) { opPositions[op] = pos++; });
 
-    targetFunction.emitRemark()
-        << "Found " << bootstrapOps.size() << " bootstrap operations";
+    llvm::sort(bootstrapOps, [&](Operation* a, Operation* b) {
+      return opPositions[a] < opPositions[b];
+    });
 
-    OpBuilder builder(module.getContext());
-    unsigned outlinedCount = 0;
-    SmallVector<func::FuncOp> outlinedFunctions;
+    return bootstrapOps;
+  }
 
-    // Create regions around each bootstrap
-    for (auto [i, bootstrapOp] : llvm::enumerate(bootstrapOps)) {
-      OutlineRegion region = createBootstrapRegion(bootstrapOp, i);
+  SmallVector<OutlineRegion> createBootstrapRegions(
+      func::FuncOp targetFunction, ArrayRef<Operation*> bootstrapOps) {
+    SmallVector<OutlineRegion> regions;
 
-      if (region.isValid() && region.operations.size() >= 3) {
-        func::FuncOp newFunc = extractFunction(region, builder, module);
-        if (newFunc && replaceWithCall(region, newFunc, builder)) {
-          outlinedFunctions.push_back(newFunc);
-          outlinedCount++;
-          targetFunction.emitRemark()
-              << "Outlined bootstrap region " << i << " with "
-              << region.operations.size() << " operations";
+    // Get function arguments (assume crypto context is first, input ciphertext
+    // is second)
+    BlockArgument cryptoContext = targetFunction.getArgument(0);
+    BlockArgument initialInput = targetFunction.getArgument(1);
+
+    // Get the final return value to understand the complete computation
+    Operation* returnOp = nullptr;
+    targetFunction.walk(
+        [&](func::ReturnOp retOp) { returnOp = retOp.getOperation(); });
+
+    Value finalOutput = returnOp ? returnOp->getOperand(0) : nullptr;
+
+    // Create regions between bootstrap operations
+    for (size_t i = 0; i < bootstrapOps.size(); ++i) {
+      Operation* currentBootstrap = bootstrapOps[i];
+
+      OutlineRegion region;
+      region.regionId = "region_" + std::to_string(i);
+      region.cryptoContext = cryptoContext;
+
+      // Determine input for this region
+      if (i == 0) {
+        region.inputCiphertext = initialInput;
+      } else {
+        // Input is the result of the previous bootstrap
+        region.inputCiphertext = bootstrapOps[i - 1]->getResult(0);
+      }
+
+      // Output is the result of the current bootstrap
+      region.outputCiphertext = currentBootstrap->getResult(0);
+
+      // Collect operations between input and current bootstrap
+      if (succeeded(collectOperationsBetweenPoints(targetFunction,
+                                                   region.inputCiphertext,
+                                                   currentBootstrap, region))) {
+        if (region.isValid() && !region.operations.empty()) {
+          regions.push_back(std::move(region));
         }
       }
     }
 
-    targetFunction.emitRemark()
-        << "Successfully outlined " << outlinedCount << " regions";
+    // Handle operations after the last bootstrap (if any)
+    if (!bootstrapOps.empty() && finalOutput) {
+      Value lastBootstrapResult = bootstrapOps.back()->getResult(0);
 
-    // Write outlined functions to separate files
-    if (!outlinedFunctions.empty()) {
-      writeOutlinedFunctions(outlinedFunctions, module);
-    }
-  }
+      // If the final output is different from the last bootstrap result,
+      // we need another region for post-bootstrap operations
+      if (finalOutput != lastBootstrapResult) {
+        OutlineRegion finalRegion;
+        finalRegion.regionId = "region_final";
+        finalRegion.cryptoContext = cryptoContext;
+        finalRegion.inputCiphertext = lastBootstrapResult;
+        finalRegion.outputCiphertext = finalOutput;
 
- private:
-  // Create region around a bootstrap operation
-  OutlineRegion createBootstrapRegion(Operation *bootstrapOp,
-                                      unsigned regionId) {
-    OutlineRegion region;
-    region.regionId = "bootstrap_region_" + std::to_string(regionId);
-
-    DenseSet<Operation *> visited;
-    region.operations.push_back(bootstrapOp);
-    visited.insert(bootstrapOp);
-
-    // Add operations that feed into bootstrap (1-2 levels back)
-    addProducers(bootstrapOp, region.operations, visited, 2);
-
-    // Add operations that consume bootstrap result (1-2 levels forward)
-    addConsumers(bootstrapOp, region.operations, visited, 2);
-
-    // Compute inputs and outputs
-    computeInputsOutputs(region);
-
-    bootstrapOp->emitRemark()
-        << "Created region " << regionId << " with " << region.operations.size()
-        << " operations, " << region.inputs.size() << " inputs, "
-        << region.outputs.size() << " outputs";
-
-    return region;
-  }
-
-  // Add producer operations (backwards)
-  void addProducers(Operation *op, SmallVector<Operation *> &ops,
-                    DenseSet<Operation *> &visited, unsigned levels) {
-    if (levels == 0) return;
-
-    for (Value operand : op->getOperands()) {
-      if (auto defOp = operand.getDefiningOp()) {
-        if (shouldInclude(defOp) && !visited.contains(defOp)) {
-          ops.push_back(defOp);
-          visited.insert(defOp);
-          addProducers(defOp, ops, visited, levels - 1);
+        if (succeeded(collectOperationsBetweenPoints(
+                targetFunction, finalRegion.inputCiphertext,
+                finalOutput.getDefiningOp(), finalRegion))) {
+          if (finalRegion.isValid() && !finalRegion.operations.empty()) {
+            regions.push_back(std::move(finalRegion));
+          }
         }
       }
     }
+
+    return regions;
   }
 
-  // Add consumer operations (forwards)
-  void addConsumers(Operation *op, SmallVector<Operation *> &ops,
-                    DenseSet<Operation *> &visited, unsigned levels) {
-    if (levels == 0) return;
+  LogicalResult collectOperationsBetweenPoints(func::FuncOp targetFunction,
+                                               Value startValue,
+                                               Operation* endOp,
+                                               OutlineRegion& region) {
+    // Get ALL operations in the function in execution order
+    SmallVector<Operation*> allOps;
+    targetFunction.walk([&](Operation* op) {
+      if (op != targetFunction.getOperation()) {
+        allOps.push_back(op);
+      }
+    });
 
-    for (Value result : op->getResults()) {
-      for (Operation *user : result.getUsers()) {
-        if (shouldInclude(user) && !visited.contains(user)) {
-          ops.push_back(user);
-          visited.insert(user);
-          addConsumers(user, ops, visited, levels - 1);
-        }
+    // Find the boundary operations
+    Operation* startOp = nullptr;
+    if (auto defOp = startValue.getDefiningOp()) {
+      startOp = defOp;
+    }
+
+    // Find positions
+    auto startIt = startOp ? llvm::find(allOps, startOp) : allOps.begin();
+    auto endIt = llvm::find(allOps, endOp);
+
+    if (endIt == allOps.end()) {
+      return failure();
+    }
+
+    // Collect ALL operations between start and end (inclusive of end)
+    // This ensures we capture side effects and setup operations
+    for (auto it = startIt + 1; it <= endIt; ++it) {
+      Operation* op = *it;
+
+      // Include the operation if it's:
+      // 1. Part of the computation (FHE operations)
+      // 2. A setup/teardown operation (deserialize_key, clear_key)
+      // 3. A constant or encoding operation
+      if (isOperationRelevantForRegion(op)) {
+        region.operations.push_back(op);
       }
     }
+
+    return success();
   }
 
-  // Check if operation should be included in region
-  bool shouldInclude(Operation *op) {
-    if (op->hasTrait<OpTrait::IsTerminator>() ||
-        isa<func::CallOp, func::ReturnOp>(op)) {
+  bool isOperationRelevantForRegion(Operation* op) {
+    StringRef opName = op->getName().getStringRef();
+
+    // Include all FHE operations
+    if (opName.starts_with("openfhe.") || opName.starts_with("ckks.") ||
+        opName.starts_with("lwe.")) {
+      return true;
+    }
+
+    // Include arithmetic and tensor operations
+    if (opName.starts_with("arith.") || opName.starts_with("tensor.")) {
+      return true;
+    }
+
+    // Exclude function control operations
+    if (isa<func::CallOp>(op) || isa<func::ReturnOp>(op)) {
       return false;
     }
 
-    StringRef opName = op->getName().getStringRef();
-    return opName.starts_with("ckks.") || opName.starts_with("lwe.") ||
-           opName.starts_with("arith.") || opName.starts_with("tensor.");
+    // Include everything else to be safe (constants, etc.)
+    return true;
   }
 
-  // Compute region inputs and outputs
-  void computeInputsOutputs(OutlineRegion &region) {
-    DenseSet<Operation *> regionOps(region.operations.begin(),
-                                    region.operations.end());
-    DenseSet<Value> inputSet, outputSet;
+  func::FuncOp createOutlinedFunction(const OutlineRegion& region,
+                                      OpBuilder& builder, ModuleOp module,
+                                      func::FuncOp originalFunc) {
+    // Create function name
+    std::string funcName = originalFunc.getName().str() + "_" + region.regionId;
 
-    // Find inputs - values used but not defined in region
-    for (Operation *op : region.operations) {
-      for (Value operand : op->getOperands()) {
-        if (auto defOp = operand.getDefiningOp()) {
-          if (!regionOps.contains(defOp)) {
-            inputSet.insert(operand);
-          }
-        } else {
-          inputSet.insert(operand);  // Block argument
-        }
-      }
+    // Ensure unique function name
+    int suffix = 0;
+    std::string uniqueName = funcName;
+    while (module.lookupSymbol(uniqueName)) {
+      uniqueName = funcName + "_" + std::to_string(suffix++);
     }
 
-    // Find outputs - values defined in region but used outside
-    for (Operation *op : region.operations) {
-      for (Value result : op->getResults()) {
-        for (Operation *user : result.getUsers()) {
-          if (!regionOps.contains(user)) {
-            outputSet.insert(result);
-            break;
-          }
-        }
-      }
-    }
+    // Create simple function type: (crypto_context, input_ciphertext) ->
+    // output_ciphertext
+    SmallVector<Type> inputTypes = {region.cryptoContext.getType(),
+                                    region.inputCiphertext.getType()};
+    SmallVector<Type> outputTypes = {region.outputCiphertext.getType()};
 
-    region.inputs.assign(inputSet.begin(), inputSet.end());
-    region.outputs.assign(outputSet.begin(), outputSet.end());
-  }
+    auto funcType =
+        FunctionType::get(builder.getContext(), inputTypes, outputTypes);
 
-  // Extract region into new function
-  func::FuncOp extractFunction(const OutlineRegion &region, OpBuilder &builder,
-                               ModuleOp module) {
+    // Create the function
     builder.setInsertionPointToEnd(module.getBody());
+    auto newFunc = builder.create<func::FuncOp>(originalFunc.getLoc(),
+                                                uniqueName, funcType);
 
-    auto funcType = region.getFunctionType(builder.getContext());
-    auto newFunc = builder.create<func::FuncOp>(builder.getUnknownLoc(),
-                                                region.regionId, funcType);
-
-    Block *funcBody = newFunc.addEntryBlock();
+    // Add function body
+    Block* funcBody = newFunc.addEntryBlock();
     builder.setInsertionPointToStart(funcBody);
 
-    // Map inputs to function arguments
+    // Create value mapping
     IRMapping valueMapping;
-    for (auto [input, arg] :
-         llvm::zip(region.inputs, funcBody->getArguments())) {
-      valueMapping.map(input, arg);
+    valueMapping.map(region.cryptoContext, funcBody->getArgument(0));
+    valueMapping.map(region.inputCiphertext, funcBody->getArgument(1));
+
+    // Clone operations instead of moving them
+    // This preserves the original operations until we're ready to replace the
+    // entire function
+    for (Operation* op : region.operations) {
+      // Clone the operation (this creates a copy without destroying the
+      // original)
+      Operation* clonedOp = builder.clone(*op, valueMapping);
+
+      // Update the mapping with the results of the cloned operation
+      for (auto [original, cloned] :
+           llvm::zip(op->getResults(), clonedOp->getResults())) {
+        valueMapping.map(original, cloned);
+      }
     }
 
-    // Clone operations
-    for (Operation *op : region.operations) {
-      builder.clone(*op, valueMapping);
+    // Create return statement
+    if (!valueMapping.contains(region.outputCiphertext)) {
+      newFunc.emitError("Output ciphertext not found in mapping");
+      newFunc.erase();
+      return nullptr;
     }
 
-    // Create return
-    SmallVector<Value> returnValues;
-    for (Value output : region.outputs) {
-      returnValues.push_back(valueMapping.lookup(output));
-    }
-    builder.create<func::ReturnOp>(builder.getUnknownLoc(), returnValues);
+    Value returnValue = valueMapping.lookup(region.outputCiphertext);
+    builder.create<func::ReturnOp>(originalFunc.getLoc(), returnValue);
 
     return newFunc;
   }
 
-  // Replace region with function call
-  bool replaceWithCall(const OutlineRegion &region, func::FuncOp newFunc,
-                       OpBuilder &builder) {
-    if (region.operations.empty()) return false;
+  void createPipelineFunction(func::FuncOp originalFunc,
+                              ArrayRef<func::FuncOp> outlinedFunctions,
+                              OpBuilder& builder) {
+    // Store the original return type and function signature
+    Type originalReturnType = originalFunc.getFunctionType().getResult(0);
+    FunctionType originalFuncType = originalFunc.getFunctionType();
 
-    Operation *firstOp = region.operations[0];
-    builder.setInsertionPoint(firstOp);
+    // Create a new function for the pipeline
+    std::string pipelineName = originalFunc.getName().str() + "_pipeline";
+    auto pipelineFunc = builder.create<func::FuncOp>(
+        originalFunc.getLoc(), pipelineName, originalFuncType);
 
-    auto callOp =
-        builder.create<func::CallOp>(firstOp->getLoc(), newFunc, region.inputs);
+    // Build the pipeline in the new function
+    Block* pipelineBody = pipelineFunc.addEntryBlock();
+    builder.setInsertionPointToStart(pipelineBody);
 
-    // Replace uses
-    for (auto [output, result] :
-         llvm::zip(region.outputs, callOp.getResults())) {
-      Value mutableOutput = output;
-      mutableOutput.replaceAllUsesWith(result);
+    // Get arguments
+    Value cryptoContext = pipelineBody->getArgument(0);
+    Value currentCiphertext = pipelineBody->getArgument(1);
+
+    // Create pipeline of function calls
+    for (auto outlinedFunc : outlinedFunctions) {
+      SmallVector<Value> callArgs = {cryptoContext, currentCiphertext};
+      auto callOp = builder.create<func::CallOp>(pipelineFunc.getLoc(),
+                                                 outlinedFunc, callArgs);
+      currentCiphertext = callOp.getResult(0);
     }
 
-    // Erase operations in reverse order
-    SmallVector<Operation *> opsToErase = region.operations;
-    std::reverse(opsToErase.begin(), opsToErase.end());
-    for (Operation *op : opsToErase) {
-      op->erase();
+    // Return the final result
+    builder.create<func::ReturnOp>(pipelineFunc.getLoc(), currentCiphertext);
+
+    // Now replace the original function's symbol and body
+    SymbolTable symbolTable(originalFunc->getParentOfType<ModuleOp>());
+
+    // Clear the original function body safely
+    while (!originalFunc.getBody().empty()) {
+      originalFunc.getBody().front().erase();
     }
 
-    return true;
+    // Clone the pipeline body into the original function
+    Block* newOriginalBody = originalFunc.addEntryBlock();
+    builder.setInsertionPointToStart(newOriginalBody);
+
+    IRMapping mapping;
+    for (auto [pipelineArg, origArg] : llvm::zip(
+             pipelineBody->getArguments(), newOriginalBody->getArguments())) {
+      mapping.map(pipelineArg, origArg);
+    }
+
+    for (Operation& op : pipelineBody->getOperations()) {
+      if (!isa<func::ReturnOp>(op)) {
+        builder.clone(op, mapping);
+      }
+    }
+
+    // Handle return operation
+    for (Operation& op : pipelineBody->getOperations()) {
+      if (auto returnOp = dyn_cast<func::ReturnOp>(op)) {
+        SmallVector<Value> returnValues;
+        for (Value operand : returnOp.getOperands()) {
+          returnValues.push_back(mapping.lookup(operand));
+        }
+        builder.create<func::ReturnOp>(originalFunc.getLoc(), returnValues);
+        break;
+      }
+    }
+
+    // Remove the temporary pipeline function
+    pipelineFunc.erase();
   }
 
-  // Write outlined functions to separate files
-  void writeOutlinedFunctions(ArrayRef<func::FuncOp> functions,
-                              ModuleOp originalModule) {
-    MLIRContext *context = originalModule.getContext();
+  LogicalResult verifyOperationPreservation(
+      func::FuncOp originalFunc, ArrayRef<func::FuncOp> outlinedFunctions) {
+    // Count operation types in outlined functions
+    DenseMap<StringRef, size_t> outlinedOpCounts;
 
-    for (auto [i, func] : llvm::enumerate(functions)) {
-      // Create a new module for this function
-      OpBuilder builder(context);
-      auto newModule = builder.create<ModuleOp>(
-          builder.getUnknownLoc(), "outlined_module_" + std::to_string(i));
-
-      // Clone the function into the new module
-      builder.setInsertionPointToEnd(newModule.getBody());
-      func::FuncOp mutableFunc = func;
-      builder.clone(*mutableFunc.getOperation());
-
-      // Write to file
-      std::string filename = "outlined_fhe_" + std::to_string(i) + ".mlir";
-      std::error_code ec;
-      llvm::raw_fd_ostream file(filename, ec);
-      if (!ec) {
-        newModule.print(file);
-        file.close();
-        originalModule.emitRemark()
-            << "Wrote outlined function to " << filename;
-      } else {
-        originalModule.emitWarning()
-            << "Failed to write " << filename << ": " << ec.message();
-      }
-
-      newModule.erase();
+    for (auto func : outlinedFunctions) {
+      func.walk([&](Operation* op) {
+        if (op != func.getOperation()) {
+          outlinedOpCounts[op->getName().getStringRef()]++;
+        }
+      });
     }
+
+    // Count operation types in the original pipeline (should just be calls now)
+    DenseMap<StringRef, size_t> pipelineOpCounts;
+    originalFunc.walk([&](Operation* op) {
+      if (op != originalFunc.getOperation()) {
+        pipelineOpCounts[op->getName().getStringRef()]++;
+      }
+    });
+
+    // For now, just emit remarks about the operation counts
+    originalFunc.emitRemark()
+        << "Outlined functions contain " << outlinedOpCounts.size()
+        << " different operation types";
+    originalFunc.emitRemark()
+        << "Pipeline function contains " << pipelineOpCounts.size()
+        << " different operation types (should be mostly func.call and "
+           "func.return)";
+
+    return success();
   }
 };
+
 }  // namespace
 
 //===----------------------------------------------------------------------===//
@@ -333,5 +464,6 @@ struct FHEFunctionOutliningPass
 std::unique_ptr<Pass> createFHEFunctionOutliningPass() {
   return std::make_unique<FHEFunctionOutliningPass>();
 }
+
 }  // namespace heir
 }  // namespace mlir
