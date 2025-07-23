@@ -579,6 +579,7 @@ LogicalResult OpenFhePkeEmitter::printEvalMethod(
     return variableNames->getNameForValue(value);
   });
   os << ");\n";
+  os << "LOG_CT(" << variableNames->getNameForValue(result) << ");\n";
   return success();
 }
 
@@ -668,6 +669,7 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
   os << variableNames->getNameForValue(op.getCryptoContext()) << "->EvalRotate("
      << variableNames->getNameForValue(op.getCiphertext()) << ", "
      << op.getEvalKey().getType().getRotationIndex().getInt() << ");\n";
+  os << "LOG_CT(" << variableNames->getNameForValue(op.getResult()) << ");\n";
   return success();
 }
 
@@ -1499,7 +1501,6 @@ LogicalResult printKeyMemRTConfig(raw_indented_ostream &os, StringRef cc,
                                   StringRef pk) {
   os << "keymem_rt.setCryptoContext(" << cc << ");\n";
   os << "keymem_rt.setKeyTag(" << pk << "->GetKeyTag());\n";
-  os << "keymem_rt.setRotIndices(rotIndices);\n";
   return success();
 }
 
@@ -1641,6 +1642,7 @@ LogicalResult OpenFhePkeEmitter::printInPlaceEvalMethod(
     return variableNames->getNameForValue(value);
   });
   os << ");\n";
+  os << "LOG_CT(" << variableNames->getNameForValue(operands[0]) << ");\n";
   return success();
 }
 
@@ -1693,6 +1695,7 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotInPlaceOp op) {
   os << ciphertextName << " = " << contextName << "->EvalRotate("
      << ciphertextName << ", " << rotationIndex << ");\n";
 
+  os << "LOG_CT(" << ciphertextName << ");\n";
   return success();
 }
 
@@ -1705,6 +1708,7 @@ LogicalResult OpenFhePkeEmitter::printOperation(MulInPlaceOp op) {
   os << lhsName << " = " << contextName << "->EvalMult(" << lhsName << ", "
      << rhsName << ");\n";
 
+  os << "LOG_CT(" << lhsName << ");\n";
   return success();
 }
 
@@ -1717,6 +1721,7 @@ LogicalResult OpenFhePkeEmitter::printOperation(MulPlainInPlaceOp op) {
   os << ciphertextName << " = " << contextName << "->EvalMult("
      << ciphertextName << ", " << plaintextName << ");\n";
 
+  os << "LOG_CT(" << ciphertextName << ");\n";
   return success();
 }
 
@@ -1766,47 +1771,51 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::ChebyshevOp op) {
      << "->EvalChebyshevSeries(" << inputName << ", coeffs_" << outputName
      << ", " << a << ", " << b << ");\n";
 
-LogicalResult OpenFhePkeEmitter::printOperation(DeserializeKeyGlobalOp op) {
-  auto rotationIndex = op.getIndex().getInt();
-
-  // Check if we have a key_depth attribute
-  if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
-    int64_t depth = depthAttr.getInt();
-    if (depth > 0) {
-      // If depth > 0, pass it as an argument
-      os << "keymem_rt.deserializeKey(" << rotationIndex << ", " << depth
-         << ");\n";
-    } else {
-      // If depth = 0, use the normal call
-      os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
-    }
-  } else {
-    // Default to normal call if no depth attribute
-    os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
-  }
-
+  os << "LOG_CT(" << outputName << ");\n";
   return success();
 }
 
-LogicalResult OpenFhePkeEmitter::printOperation(RotateGlobalOp op) {
-  emitAutoAssignPrefix(op.getResult());
-
-  auto rotationIndex = op.getRotationIndex().getInt();
-  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
-  auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
-
-  os << contextName << "->EvalRotate(" << ciphertextName << ", "
-     << rotationIndex << ");\n";
-
-  return success();
-}
-
-LogicalResult OpenFhePkeEmitter::printOperation(ClearKeyGlobalOp op) {
-  auto rotationIndex = op.getIndex().getInt();
-
-  os << "keymem_rt.clearKey(" << rotationIndex << ");\n";
-  return success();
-}
+// LogicalResult OpenFhePkeEmitter::printOperation(DeserializeKeyGlobalOp op) {
+//   auto rotationIndex = op.getIndex().getInt();
+//
+//   // Check if we have a key_depth attribute
+//   if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
+//     int64_t depth = depthAttr.getInt();
+//     if (depth > 0) {
+//       // If depth > 0, pass it as an argument
+//       os << "keymem_rt.deserializeKey(" << rotationIndex << ", " << depth
+//          << ");\n";
+//     } else {
+//       // If depth = 0, use the normal call
+//       os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+//     }
+//   } else {
+//     // Default to normal call if no depth attribute
+//     os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+//   }
+//
+//   return success();
+// }
+//
+// LogicalResult OpenFhePkeEmitter::printOperation(RotateGlobalOp op) {
+//   emitAutoAssignPrefix(op.getResult());
+//
+//   auto rotationIndex = op.getRotationIndex().getInt();
+//   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
+//   auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
+//
+//   os << contextName << "->EvalRotate(" << ciphertextName << ", "
+//      << rotationIndex << ");\n";
+//
+//   return success();
+// }
+//
+// LogicalResult OpenFhePkeEmitter::printOperation(ClearKeyGlobalOp op) {
+//   auto rotationIndex = op.getIndex().getInt();
+//
+//   os << "keymem_rt.clearKey(" << rotationIndex << ");\n";
+//   return success();
+// }
 
 LogicalResult OpenFhePkeEmitter::emitType(Type type, Location loc,
                                           bool constant) {
