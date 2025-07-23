@@ -33,6 +33,9 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
     // Maps each rotation index to the depths it's used at
     llvm::DenseMap<int64_t, std::set<unsigned>> indexToDepths;
 
+    // Maps deserialize op results to their rotation indices
+    llvm::DenseMap<Value, int64_t> keyToIndex;
+
     // Initialize depth for block arguments
     op->walk([&](Block *block) {
       for (BlockArgument arg : block->getArguments()) {
@@ -57,6 +60,30 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
       } else if (auto mulPlainOp = dyn_cast<openfhe::MulPlainOp>(operation)) {
         // Multiplication by plaintext also increases depth by 1
         depthMap[mulPlainOp.getResult()] = maxDepth + 1;
+      } else if (auto deserOp =
+                     dyn_cast<openfhe::DeserializeKeyOp>(operation)) {
+        // Track the rotation index for each key
+        int64_t index = -1;
+        if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+          index = indexAttr.getInt();
+        } else if (auto keyType = dyn_cast<openfhe::EvalKeyType>(
+                       deserOp.getEvalKey().getType())) {
+          if (auto indexAttr = keyType.getRotationIndex()) {
+            index = indexAttr.getInt();
+          }
+        }
+
+        if (index != -1) {
+          keyToIndex[deserOp.getResult()] = index;
+        }
+
+        // For deserialize ops, set depth to 0 (or the depth attribute if
+        // present)
+        unsigned initialDepth = 0;
+        if (auto depthAttr = deserOp->getAttrOfType<IntegerAttr>("key_depth")) {
+          initialDepth = depthAttr.getInt();
+        }
+        depthMap[deserOp.getResult()] = initialDepth;
       } else {
         // All other operations maintain depth
         for (Value result : operation->getResults()) {
@@ -98,6 +125,38 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
           if (index != -1) {
             indexToDepths[index].insert(inputDepth);
           }
+        } else if (auto compressOp =
+                       dyn_cast<openfhe::CompressKeyOp>(definingOp)) {
+          // If the key comes from a compression op, follow through to the
+          // original deserialize
+          Value origKey = compressOp.getEvalKey();
+          if (auto origDefiningOp = origKey.getDefiningOp()) {
+            if (auto deserOp =
+                    dyn_cast<openfhe::DeserializeKeyOp>(origDefiningOp)) {
+              // Update depths for the deserialize op
+              auto it = deserializeDepthMap.find(deserOp);
+              if (it == deserializeDepthMap.end() || inputDepth < it->second) {
+                deserializeDepthMap[deserOp] = inputDepth;
+              }
+
+              // Extract the rotation index from the original deserialize
+              int64_t index = -1;
+              if (auto indexAttr =
+                      deserOp->getAttrOfType<IntegerAttr>("index")) {
+                index = indexAttr.getInt();
+              } else if (auto keyType = dyn_cast<openfhe::EvalKeyType>(
+                             origKey.getType())) {
+                if (auto indexAttr = keyType.getRotationIndex()) {
+                  index = indexAttr.getInt();
+                }
+              }
+
+              // Record depths
+              if (index != -1) {
+                indexToDepths[index].insert(inputDepth);
+              }
+            }
+          }
         }
       }
     });
@@ -131,6 +190,74 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
                      << "\n";
       }
     });
+
+    // TODO dynamic compress not supported
+    // Fourth pass: Insert CompressKeyOp before rotations that use keys at
+    // higher depths
+    // SmallVector<std::pair<openfhe::RotOp, unsigned>, 8> rotationsToModify;
+    //
+    // // First identify all rotations that need modification
+    // op->walk([&](openfhe::RotOp rotOp) {
+    //   // Get the input depth
+    //   Value input = rotOp.getCiphertext();
+    //   unsigned inputDepth = depthMap.count(input) > 0 ? depthMap[input] : 0;
+    //
+    //   // Get the key and check its depth
+    //   Value key = rotOp.getEvalKey();
+    //   unsigned keyDepth = 0;
+    //
+    //   // Determine the key's original depth
+    //   if (auto definingOp = key.getDefiningOp()) {
+    //     if (auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(definingOp)) {
+    //       if (auto depthAttr =
+    //               deserOp->getAttrOfType<IntegerAttr>("key_depth")) {
+    //         keyDepth = depthAttr.getInt();
+    //       }
+    //     } else if (auto compressOp =
+    //                    dyn_cast<openfhe::CompressKeyOp>(definingOp)) {
+    //       // Already compressed, check if it's at the right depth
+    //       if (auto depthAttr =
+    //               compressOp->getAttrOfType<IntegerAttr>("depth")) {
+    //         keyDepth = depthAttr.getInt();
+    //       }
+    //     }
+    //   }
+    //
+    //   // If the input depth is higher than the key depth, we need compression
+    //   if (inputDepth > keyDepth) {
+    //     rotationsToModify.push_back({rotOp, inputDepth});
+    //     llvm::errs() << "Will compress key at rotation with inputDepth="
+    //                  << inputDepth << ", keyDepth=" << keyDepth << "\n";
+    //   }
+    // });
+    //
+    // // Now insert the compression operations
+    // for (auto [rotOp, targetDepth] : rotationsToModify) {
+    //   OpBuilder builder(rotOp);
+    //   Value key = rotOp.getEvalKey();
+    //
+    //   // Create a CompressKeyOp
+    //   auto compressOp = builder.create<openfhe::CompressKeyOp>(
+    //       rotOp.getLoc(), key.getType(), rotOp.getCryptoContext(), key,
+    //       builder.getI64IntegerAttr(targetDepth));
+    //
+    //   // Add the depth attribute
+    //   compressOp->setAttr(
+    //       "depth", IntegerAttr::get(IntegerType::get(ctx, 32), targetDepth));
+    //
+    //   // Update the rotation to use the compressed key
+    //   rotOp.getEvalKeyMutable().assign(compressOp.getResultKey());
+    //
+    //   // Log the change
+    //   int64_t index = -1;
+    //   if (keyToIndex.count(key) > 0) {
+    //     index = keyToIndex[key];
+    //   }
+    //
+    //   llvm::errs() << "Inserted compression for key " << index << " to depth
+    //   "
+    //                << targetDepth << "\n";
+    // }
 
     // Collect information for GenRotKeyDepth operations
     std::map<unsigned, std::set<int64_t>> depthToIndices;
