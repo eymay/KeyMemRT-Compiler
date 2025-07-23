@@ -105,6 +105,7 @@ cc_binary(
         "@heir//lib/Transforms/AnnotateModule",
         "@heir//lib/Transforms/AnnotateSecretness",
         "@heir//lib/Transforms/ApplyFolders",
+        "@heir//lib/Transforms/BootstrapRotationAnalysis",
         "@heir//lib/Transforms/ConvertIfToSelect",
         "@heir//lib/Transforms/ConvertSecretExtractToStaticExtract",
         "@heir//lib/Transforms/ConvertSecretForToStaticFor",

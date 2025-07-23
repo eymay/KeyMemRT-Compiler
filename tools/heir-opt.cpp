@@ -58,6 +58,7 @@
 #include "lib/Transforms/AnnotateModule/AnnotateModule.h"
 #include "lib/Transforms/AnnotateSecretness/AnnotateSecretness.h"
 #include "lib/Transforms/ApplyFolders/ApplyFolders.h"
+#include "lib/Transforms/BootstrapRotationAnalysis/BootstrapRotationAnalysis.h"
 #include "lib/Transforms/ConvertIfToSelect/ConvertIfToSelect.h"
 #include "lib/Transforms/ConvertSecretExtractToStaticExtract/ConvertSecretExtractToStaticExtract.h"
 #include "lib/Transforms/ConvertSecretForToStaticFor/ConvertSecretForToStaticFor.h"
@@ -292,6 +293,7 @@ int main(int argc, char **argv) {
   registerRotationDepthAnalysisPasses();
   registerKeyCompressionPasses();
   registerLowerLinearTransformPasses();
+  registerBootstrapRotationAnalysisPasses();
   registerFHEFunctionOutliningPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS

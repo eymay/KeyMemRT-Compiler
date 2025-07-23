@@ -1517,10 +1517,21 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenRotKeyOp op) {
   os << "   return cc;\n";
   os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
      << ", rotIndices);\n\n";
-  os << "if (!keymem_rt.serializeAllKeys()) {\n";
-  os << "  std::cerr << \"Failed to serialize rotation keys\" << std::endl;\n";
-  os << "}\n";
-  os << "keymem_rt.clearAllKeys();\n";
+  bool bootstrapEnabled = false;
+  if (auto bootstrapAttr = op->getAttrOfType<BoolAttr>("bootstrap_enabled"))
+    bootstrapEnabled = bootstrapAttr.getValue();
+
+  if (!bootstrapEnabled) {
+    os << "keymem_rt.setRotIndices(rotIndices);\n";
+    os << "if (!keymem_rt.serializeAllKeys()) {\n";
+    os << "  std::cerr << \"Failed to serialize rotation keys\" << "
+          "std::endl;\n";
+    os << "}\n";
+    os << "keymem_rt.clearAllKeys();\n";
+    os << "keymem_rt.deserializeKey(1);\n";
+    os << "keymem_rt.generateConjugateKey(sk);\n";
+    os << "keymem_rt.clearKey(1);\n";
+  }
   return success();
 }
 
@@ -1573,11 +1584,42 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::GenRotKeyDepthOp op) {
 LogicalResult OpenFhePkeEmitter::printOperation(GenBootstrapKeyOp op) {
   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
   auto privateKeyName = variableNames->getNameForValue(op.getPrivateKey());
+  std::vector<int32_t> bootstrapIndices;
+  if (auto indicesAttr = op->getAttrOfType<ArrayAttr>("rotation_indices")) {
+    for (auto attr : indicesAttr.getAsRange<IntegerAttr>()) {
+      bootstrapIndices.push_back(attr.getInt());
+    }
+  }
+  if (bootstrapIndices.empty()) return failure();
+  os << "  const std::vector<int32_t> bootstrapRotIndices = {";
+  llvm::interleaveComma(bootstrapIndices, os,
+                        [&](int32_t value) { os << value; });
+  os << "};\n";
+
+  os << "  // Merge regular and bootstrap rotation indices\n";
+  os << "  std::set<int32_t> mergedIndicesSet(rotIndices.begin(), "
+        "rotIndices.end());\n";
+  os << "  mergedIndicesSet.insert(bootstrapRotIndices.begin(), "
+        "bootstrapRotIndices.end());\n";
+  os << "  std::vector<int32_t> mergedRotIndices(mergedIndicesSet.begin(), "
+        "mergedIndicesSet.end());\n\n";
+
+  os << "  // Update keymem_rt with merged indices\n";
+  os << "  keymem_rt.setRotIndices(mergedRotIndices);\n\n";
+
   // compiler can not determine slot num for now
   // full packing for CKKS, as we currently always full packing
   os << "auto numSlots = " << contextName << "->GetRingDimension() / 2;\n";
   os << contextName << "->EvalBootstrapKeyGen(" << privateKeyName
      << ", numSlots);\n";
+  os << "  if (!keymem_rt.serializeAllKeys()) {\n";
+  os << "    std::cerr << \"Failed to serialize rotation keys\" << "
+        "std::endl;\n";
+  os << "  }\n";
+  os << "  keymem_rt.clearAllKeys();\n";
+  os << "keymem_rt.deserializeKey(1);\n";
+  os << "keymem_rt.generateConjugateKey(sk);\n";
+  os << "keymem_rt.clearKey(1);\n";
   return success();
 }
 
