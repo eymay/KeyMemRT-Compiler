@@ -35,6 +35,7 @@
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"   // from @llvm-project
 #include "mlir/include/mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
+#include "mlir/include/mlir/IR/AsmState.h"
 #include "mlir/include/mlir/IR/BuiltinAttributes.h"      // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinOps.h"             // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
@@ -47,7 +48,6 @@
 #include "mlir/include/mlir/IR/ValueRange.h"             // from @llvm-project
 #include "mlir/include/mlir/Support/LLVM.h"              // from @llvm-project
 #include "mlir/include/mlir/Support/LogicalResult.h"     // from @llvm-project
-
 namespace mlir {
 namespace heir {
 namespace openfhe {
@@ -568,6 +568,20 @@ LogicalResult OpenFhePkeEmitter::emitTypedAssignPrefix(Value result,
   os << variableNames->getNameForValue(result) << " = ";
   return success();
 }
+void OpenFhePkeEmitter::streamSSAName(::mlir::Value value) {
+  // Create AsmState for the parent operation
+  Operation *parentOp = value.getParentRegion()->getParentOp();
+  AsmState asmState(parentOp);
+
+  // Print just the SSA name (e.g., %ct_715)
+  value.printAsOperand(os, asmState);
+}
+
+void OpenFhePkeEmitter::emitLogCTWithSSA(::mlir::Value result) {
+  os << "LOG_CT(" << variableNames->getNameForValue(result) << ",\"";
+  streamSSAName(result);
+  os << "\");\n";
+}
 
 LogicalResult OpenFhePkeEmitter::printEvalMethod(
     ::mlir::Value result, ::mlir::Value cryptoContext,
@@ -579,7 +593,7 @@ LogicalResult OpenFhePkeEmitter::printEvalMethod(
     return variableNames->getNameForValue(value);
   });
   os << ");\n";
-  os << "LOG_CT(" << variableNames->getNameForValue(result) << ");\n";
+  // emitLogCTWithSSA(result);
   return success();
 }
 
@@ -669,7 +683,10 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
   os << variableNames->getNameForValue(op.getCryptoContext()) << "->EvalRotate("
      << variableNames->getNameForValue(op.getCiphertext()) << ", "
      << op.getEvalKey().getType().getRotationIndex().getInt() << ");\n";
-  os << "LOG_CT(" << variableNames->getNameForValue(op.getResult()) << ");\n";
+  // os << "LOG_CT(" << variableNames->getNameForValue(op.getResult()) <<
+  // ");\n";
+
+  emitLogCTWithSSA(op.getCiphertext());
   return success();
 }
 
@@ -758,8 +775,15 @@ LogicalResult OpenFhePkeEmitter::printOperation(KeySwitchOp op) {
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(BootstrapOp op) {
-  return printEvalMethod(op.getResult(), op.getCryptoContext(),
-                         {op.getCiphertext()}, "EvalBootstrap");
+  emitAutoAssignPrefix(op.getResult());
+  os << variableNames->getNameForValue(op.getCryptoContext()) << "->"
+     << "EvalBootstrap" << "(";
+  os << commaSeparatedValues({op.getCiphertext()}, [&](Value value) {
+    return variableNames->getNameForValue(value);
+  });
+  os << ");\n";
+  emitLogCTWithSSA(op.getCiphertext());
+  return success();
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(arith::ConstantOp op) {
@@ -1523,7 +1547,7 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenRotKeyOp op) {
     bootstrapEnabled = bootstrapAttr.getValue();
 
   if (!bootstrapEnabled) {
-    os << "keymem_rt.setRotIndices(rotIndices);\n";
+    os << "keymem_rt.addRotIndices(rotIndices);\n";
     os << "if (!keymem_rt.serializeAllKeys()) {\n";
     os << "  std::cerr << \"Failed to serialize rotation keys\" << "
           "std::endl;\n";
@@ -1572,11 +1596,12 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::GenRotKeyDepthOp op) {
   //   return failure();
   // Serialize keys at this depth
   os << "  // Serialize keys at depth " << depth << "\n";
-  os << "  if (!keymem_rt.serializeKeysAtDepth(rotIndices_depth_" << depth
+  os << "  if (!keymem_rt.serializeKeysAtLevel(rotIndices_depth_" << depth
      << ", " << depth << ")) {\n";
   os << "    std::cerr << \"Failed to serialize rotation keys at depth "
      << depth << "\" << std::endl;\n";
   os << "  }\n";
+  os << "keymem_rt.addRotIndices(rotIndices_depth_" << depth << ");\n";
   os << "  " << contextName << "->ClearEvalAutomorphismKeys();\n\n";
 
   return success();
@@ -1597,16 +1622,8 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenBootstrapKeyOp op) {
                         [&](int32_t value) { os << value; });
   os << "};\n";
 
-  os << "  // Merge regular and bootstrap rotation indices\n";
-  os << "  std::set<int32_t> mergedIndicesSet(rotIndices.begin(), "
-        "rotIndices.end());\n";
-  os << "  mergedIndicesSet.insert(bootstrapRotIndices.begin(), "
-        "bootstrapRotIndices.end());\n";
-  os << "  std::vector<int32_t> mergedRotIndices(mergedIndicesSet.begin(), "
-        "mergedIndicesSet.end());\n\n";
-
-  os << "  // Update keymem_rt with merged indices\n";
-  os << "  keymem_rt.setRotIndices(mergedRotIndices);\n\n";
+  os << "// Update keymem_rt with merged indices\n";
+  os << "keymem_rt.addRotIndices(bootstrapRotIndices);\n\n";
 
   // compiler can not determine slot num for now
   // full packing for CKKS, as we currently always full packing
@@ -1642,7 +1659,8 @@ LogicalResult OpenFhePkeEmitter::printInPlaceEvalMethod(
     return variableNames->getNameForValue(value);
   });
   os << ");\n";
-  os << "LOG_CT(" << variableNames->getNameForValue(operands[0]) << ");\n";
+  // os << "LOG_CT(" << variableNames->getNameForValue(operands[0]) << ");\n";
+  emitLogCTWithSSA(operands[0]);
   return success();
 }
 
@@ -1728,7 +1746,6 @@ LogicalResult OpenFhePkeEmitter::printOperation(MulPlainInPlaceOp op) {
 LogicalResult OpenFhePkeEmitter::printOperation(ClearCtOp op) {
   auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
 
-  os << "// Clear ciphertext to free memory\n";
   os << ciphertextName << ".reset();\n";
 
   return success();
@@ -1771,7 +1788,9 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::ChebyshevOp op) {
      << "->EvalChebyshevSeries(" << inputName << ", coeffs_" << outputName
      << ", " << a << ", " << b << ");\n";
 
-  os << "LOG_CT(" << outputName << ");\n";
+  // os << "LOG_CT(" << outputName << ");\n";
+
+  // emitLogCTWithSSA(op.getOutput());
   return success();
 }
 

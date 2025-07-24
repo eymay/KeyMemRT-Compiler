@@ -160,6 +160,8 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(RotateGlobalOp op);
   LogicalResult printOperation(ClearKeyGlobalOp op);
 
+  void streamSSAName(::mlir::Value value);
+  void emitLogCTWithSSA(::mlir::Value value);
   // Helpers for above
   LogicalResult printEvalMethod(::mlir::Value result,
                                 ::mlir::Value cryptoContext,
