@@ -104,47 +104,76 @@ struct BootstrapInfo {
 };
 
 struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
+  using impl::KeyCompressionBase<KeyCompression>::KeyCompressionBase;
   void runOnOperation() override {
     Operation* op = getOperation();
     MLIRContext* ctx = op->getContext();
 
     // Step 1: Load profile data
-    auto profileEntries = ProfileParser::parseProfile("rotation_profile.txt");
+    std::string profileFile = profileFilePath.getValue();
+    auto profileEntries = ProfileParser::parseProfile(profileFile);
     if (profileEntries.empty()) {
-      llvm::errs() << "No profile data found. Please run the program first.\n";
+      llvm::errs() << "No profile data found. "
+                      "Please run the program first.\n";
       return;
     }
 
     llvm::errs() << "Loaded " << profileEntries.size() << " profile entries\n";
 
-    // Step 2: Build mapping from MLIR input names to rotation operations
-    std::map<std::string, int32_t> mlirInputToRotIndex;
+    // Step 2: Build mapping from ciphertext MLIR names to their levels
+    std::map<std::string, unsigned> ciphertextToLevel;
 
+    for (const auto& entry : profileEntries) {
+      ciphertextToLevel[entry.inputMLIRName] = entry.level;
+      llvm::errs() << "Ciphertext " << entry.inputMLIRName << " is at level "
+                   << entry.level << "\n";
+    }
+
+    // Step 3: For each rotation operation, find the level of its input
+    // ciphertext and set the corresponding deserialize key to match that level
     op->walk([&](openfhe::RotOp rotOp) {
       std::string inputMLIRName = getMLIRNameForValue(rotOp.getCiphertext());
       auto rotationIndex =
           rotOp.getEvalKey().getType().getRotationIndex().getInt();
 
-      mlirInputToRotIndex[inputMLIRName] = rotationIndex;
+      auto it = ciphertextToLevel.find(inputMLIRName);
+      if (it != ciphertextToLevel.end()) {
+        unsigned ciphertextLevel = it->second;
 
-      llvm::errs() << "Found rotation " << rotationIndex << " with input "
-                   << inputMLIRName << "\n";
+        // Find the deserialize operation that provides the key for this
+        // rotation
+        Value evalKey = rotOp.getEvalKey();
+        Operation* deserOp = evalKey.getDefiningOp();
+
+        if (auto deserializeOp = dyn_cast<openfhe::DeserializeKeyOp>(deserOp)) {
+          // Set the key depth to match the ciphertext level
+          deserializeOp->setAttr(
+              "key_depth",
+              IntegerAttr::get(IntegerType::get(ctx, 64), ciphertextLevel));
+
+          llvm::errs() << "Set key_depth=" << ciphertextLevel
+                       << " for rotation " << rotationIndex
+                       << " (matches ciphertext " << inputMLIRName
+                       << " level)\n";
+        } else {
+          llvm::errs() << "Warning: Could not find deserialize op for rotation "
+                       << rotationIndex << "\n";
+        }
+      } else {
+        llvm::errs() << "Warning: No level found for ciphertext "
+                     << inputMLIRName << " used by rotation " << rotationIndex
+                     << "\n";
+      }
     });
 
-    // Step 3: Analyze bootstrap operations and set levels for their keys
-    analyzeBootstrapOperations(op, profileEntries, ctx);
+    // Step 4: DISABLED - Skip compression operations
+    // insertOptimalCompressionOperations(op, profileEntries,
+    // mlirInputToRotIndex, ctx);
 
-    // Step 4: Handle regular rotation operations from profile data
-    handleRegularRotations(op, profileEntries, mlirInputToRotIndex, ctx);
-
-    // Step 5: Insert compress_key operations for keys used at multiple levels
-    insertOptimalCompressionOperations(op, profileEntries, mlirInputToRotIndex,
-                                       ctx);
-
-    // Step 6: Generate GenRotKeyDepth operations based on deserialize levels
+    // Step 5: Generate GenRotKeyDepth operations based on deserialize levels
     generateGenRotKeyDepthOps(op, ctx);
 
-    // Step 7: Enhanced report
+    // Step 6: Enhanced report
     generateReport(op, profileEntries);
   }
 
@@ -223,12 +252,28 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
     // For each set of keys, find which bootstraps use them and handle
     // multi-level cases
     for (const auto& [rotationIndex, deserializeOps] : allDeserializeOps) {
-      // Find all bootstraps that use this rotation index
+      // Find all bootstraps that use this rotation index AND share the same key
+      // lifetime
       std::vector<BootstrapInfo> bootstrapsUsingThisKey;
 
-      for (const auto& bootstrap : allBootstraps) {
-        if (bootstrap.rotationIndices.count(rotationIndex)) {
-          bootstrapsUsingThisKey.push_back(bootstrap);
+      // Get the key lifetime for this rotation index
+      for (auto deserOp : deserializeOps) {
+        auto keyLifetimeBootstraps =
+            getBootstrapsInKeyLifetime(deserOp, allBootstraps, rotationIndex);
+
+        // Add these bootstraps to our list if they're not already there
+        for (const auto& bootstrap : keyLifetimeBootstraps) {
+          // Check if we already have this bootstrap
+          bool alreadyAdded = false;
+          for (const auto& existing : bootstrapsUsingThisKey) {
+            if (existing.op == bootstrap.op) {
+              alreadyAdded = true;
+              break;
+            }
+          }
+          if (!alreadyAdded) {
+            bootstrapsUsingThisKey.push_back(bootstrap);
+          }
         }
       }
 
@@ -246,6 +291,52 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
       handleMultiBootstrapKeyUsage(rotationIndex, bootstrapsUsingThisKey,
                                    deserializeOps, ctx);
     }
+  }
+
+  // NEW: Get bootstraps that occur within the lifetime of a specific
+  // deserialize key
+  std::vector<BootstrapInfo> getBootstrapsInKeyLifetime(
+      openfhe::DeserializeKeyOp deserOp,
+      const std::vector<BootstrapInfo>& allBootstraps, int32_t rotationIndex) {
+    std::vector<BootstrapInfo> bootstrapsInLifetime;
+
+    // Find the clear operation for this deserialize
+    Value evalKey = deserOp.getResult();
+    Operation* deserOperation = deserOp.getOperation();
+    Operation* clearOperation = nullptr;
+
+    // Look for the clear operation for this key
+    Operation* current = deserOperation->getNextNode();
+    while (current != nullptr) {
+      if (auto clearOp = dyn_cast<openfhe::ClearKeyOp>(current)) {
+        if (clearOp.getEvalKey() == evalKey) {
+          clearOperation = current;
+          break;
+        }
+      }
+      current = current->getNextNode();
+    }
+
+    // Find all bootstraps that use this rotation index and occur between deser
+    // and clear
+    for (const auto& bootstrap : allBootstraps) {
+      if (bootstrap.rotationIndices.count(rotationIndex)) {
+        Operation* bootstrapOp =
+            const_cast<openfhe::BootstrapOp&>(bootstrap.op).getOperation();
+
+        // Check if bootstrap is between deserialize and clear (or after
+        // deserialize if no clear)
+        bool isAfterDeser = isOperationBefore(deserOperation, bootstrapOp);
+        bool isBeforeClear = (clearOperation == nullptr) ||
+                             isOperationBefore(bootstrapOp, clearOperation);
+
+        if (isAfterDeser && isBeforeClear) {
+          bootstrapsInLifetime.push_back(bootstrap);
+        }
+      }
+    }
+
+    return bootstrapsInLifetime;
   }
 
   void handleMultiBootstrapKeyUsage(
@@ -485,10 +576,12 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
           *std::min_element(levelsUsed.begin(), levelsUsed.end());
       auto& usages = rotationToUsages[rotationIndex];
 
-      // Sort usages by level to find optimal compression points
+      // Sort usages by program order (not by level) to maintain dominance
       std::sort(usages.begin(), usages.end(),
-                [](const RotationUsage& a, const RotationUsage& b) {
-                  return a.level < b.level;
+                [this](const RotationUsage& a, const RotationUsage& b) {
+                  return isOperationBefore(
+                      const_cast<openfhe::RotOp&>(a.rotOp).getOperation(),
+                      const_cast<openfhe::RotOp&>(b.rotOp).getOperation());
                 });
 
       llvm::errs() << "Rotation " << rotationIndex << " needs compression: "
@@ -499,75 +592,207 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
       }
       llvm::errs() << "\n";
 
-      // Insert compression operations at optimal points
-      insertOptimalCompressionForRotation(rotationIndex, usages,
-                                          deserializeLevel, ctx);
+      // Insert compression operations preserving dominance
+      insertCompressionWithDominancePreservation(rotationIndex, usages, ctx);
     }
   }
 
-  void insertOptimalCompressionForRotation(
+  void insertCompressionWithDominancePreservation(
       int32_t rotationIndex, const std::vector<RotationUsage>& usages,
-      unsigned deserializeLevel, MLIRContext* ctx) {
-    // Group usages by level
+      MLIRContext* ctx) {
+    // Build a map of deserialize→clear ranges for this rotation index
+    std::vector<KeyLifetimeRange> keyRanges =
+        findKeyLifetimeRanges(rotationIndex);
+
+    if (keyRanges.empty()) {
+      llvm::errs() << "Warning: No key lifetime ranges found for rotation "
+                   << rotationIndex << "\n";
+      return;
+    }
+
+    // Group usages by level, maintaining program order within each level
     std::map<unsigned, std::vector<RotationUsage>> usagesByLevel;
     for (const auto& usage : usages) {
       usagesByLevel[usage.level].push_back(usage);
     }
 
-    // Process levels in ascending order
+    // Sort levels in ascending order
     std::vector<unsigned> sortedLevels;
     for (const auto& [level, _] : usagesByLevel) {
       sortedLevels.push_back(level);
     }
     std::sort(sortedLevels.begin(), sortedLevels.end());
 
-    Value currentKey = nullptr;  // Track the current key version
-
-    for (size_t i = 0; i < sortedLevels.size(); i++) {
-      unsigned currentLevel = sortedLevels[i];
-      auto& levelUsages = usagesByLevel[currentLevel];
-
-      // Update all rotations at this level to use the current key
-      for (auto& usage : levelUsages) {
-        if (currentKey && currentLevel > deserializeLevel) {
-          // Use compressed key for higher levels
-          usage.rotOp.getEvalKeyMutable().assign(currentKey);
-        }
-        // For the first level (deserialize level), operations use the original
-        // key
-      }
-
-      // After processing all operations at this level, compress for the next
-      // level if needed
-      if (i + 1 < sortedLevels.size()) {
-        unsigned nextLevel = sortedLevels[i + 1];
-
-        // Find the last operation at the current level to insert compression
-        // after it
-        openfhe::RotOp lastOpAtLevel = levelUsages.back().rotOp;
-
-        // Insert compression operation after the last usage at current level
-        currentKey = insertCompressionAfterOperation(lastOpAtLevel, nextLevel,
-                                                     rotationIndex, ctx);
-
-        llvm::errs() << "Inserted compression for rotation " << rotationIndex
-                     << " from level " << currentLevel << " to " << nextLevel
-                     << " after last usage at level " << currentLevel << "\n";
-      }
+    // Process each key lifetime range
+    for (auto& keyRange : keyRanges) {
+      processKeyLifetimeRange(keyRange, usagesByLevel, sortedLevels,
+                              rotationIndex, ctx);
     }
   }
 
-  Value insertCompressionAfterOperation(openfhe::RotOp rotOp,
-                                        unsigned targetLevel,
-                                        int32_t rotationIndex,
-                                        MLIRContext* ctx) {
+  struct KeyLifetimeRange {
+    openfhe::DeserializeKeyOp deserializeOp;
+    openfhe::ClearKeyOp clearOp;  // can be null if no clear found
+    Value keyValue;
+    std::vector<openfhe::RotOp> rotationsInRange;
+  };
+
+  std::vector<KeyLifetimeRange> findKeyLifetimeRanges(int32_t rotationIndex) {
+    std::vector<KeyLifetimeRange> ranges;
+
+    // Find all deserialize operations for this rotation index
+    getOperation()->walk([&](openfhe::DeserializeKeyOp deserOp) {
+      if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+        if (indexAttr.getInt() == rotationIndex) {
+          KeyLifetimeRange range;
+          range.deserializeOp = deserOp;
+          range.keyValue = deserOp.getResult();
+          range.clearOp = nullptr;  // Will be found below
+
+          // Find the corresponding clear operation
+          Operation* current = deserOp.getOperation()->getNextNode();
+          while (current != nullptr) {
+            if (auto clearOp = dyn_cast<openfhe::ClearKeyOp>(current)) {
+              if (clearOp.getEvalKey() == range.keyValue) {
+                range.clearOp = clearOp;
+                break;
+              }
+            }
+            current = current->getNextNode();
+          }
+
+          // Find all rotation operations that use this key in its lifetime
+          current = deserOp.getOperation()->getNextNode();
+          Operation* endOp =
+              range.clearOp ? range.clearOp.getOperation() : nullptr;
+
+          while (current != nullptr && current != endOp) {
+            if (auto rotOp = dyn_cast<openfhe::RotOp>(current)) {
+              if (rotOp.getEvalKey() == range.keyValue) {
+                range.rotationsInRange.push_back(rotOp);
+              }
+            }
+            current = current->getNextNode();
+          }
+
+          ranges.push_back(range);
+        }
+      }
+    });
+
+    return ranges;
+  }
+
+  void processKeyLifetimeRange(
+      KeyLifetimeRange& keyRange,
+      const std::map<unsigned, std::vector<RotationUsage>>& usagesByLevel,
+      const std::vector<unsigned>& sortedLevels, int32_t rotationIndex,
+      MLIRContext* ctx) {
+    // Find which rotations in this range need compression
+    std::map<unsigned, std::vector<openfhe::RotOp>> rotationsByLevel;
+
+    for (auto rotOp : keyRange.rotationsInRange) {
+      // Find the level for this rotation from the usages
+      for (const auto& [level, usages] : usagesByLevel) {
+        for (const auto& usage : usages) {
+          if (const_cast<openfhe::RotOp&>(usage.rotOp).getOperation() ==
+              rotOp.getOperation()) {
+            rotationsByLevel[level].push_back(rotOp);
+            break;
+          }
+        }
+      }
+    }
+
+    if (rotationsByLevel.empty()) {
+      return;  // No rotations in this range need compression
+    }
+
+    // Sort the levels that are actually used in this range
+    std::vector<unsigned> levelsInRange;
+    for (const auto& [level, _] : rotationsByLevel) {
+      levelsInRange.push_back(level);
+    }
+    std::sort(levelsInRange.begin(), levelsInRange.end());
+
+    if (levelsInRange.size() <= 1) {
+      return;  // Single level, no compression needed
+    }
+
+    // Process levels sequentially, creating compressions within this key's
+    // lifetime
+    Value currentKey = keyRange.keyValue;  // Start with the deserialize key
+
+    for (size_t i = 0; i < levelsInRange.size(); i++) {
+      unsigned currentLevel = levelsInRange[i];
+      auto& rotationsAtLevel = rotationsByLevel[currentLevel];
+
+      // Update rotations at this level to use the current key (if not the
+      // original)
+      if (i > 0) {
+        for (auto rotOp : rotationsAtLevel) {
+          replaceRotationWithCompressedKey(rotOp, currentKey, ctx);
+        }
+      }
+
+      // After the last rotation at this level, create compressed key for next
+      // level
+      if (i + 1 < levelsInRange.size()) {
+        unsigned nextLevel = levelsInRange[i + 1];
+        openfhe::RotOp lastRotAtLevel = rotationsAtLevel.back();
+
+        // Create compressed key right after the last rotation at this level
+        Value compressedKey = createCompressedKeyAfterRotation(
+            lastRotAtLevel, currentKey, nextLevel, rotationIndex, ctx);
+
+        if (compressedKey) {
+          currentKey = compressedKey;
+
+          llvm::errs() << "Created compressed key for rotation "
+                       << rotationIndex << " from level " << currentLevel
+                       << " to " << nextLevel << " within key lifetime range\n";
+        }
+      }
+    }
+
+    // Update the clear operation to clear the final compressed key instead of
+    // original
+    if (keyRange.clearOp && currentKey != keyRange.keyValue) {
+      OpBuilder builder(keyRange.clearOp);
+
+      // Create new clear operation for the compressed key
+      builder.create<openfhe::ClearKeyOp>(
+          keyRange.clearOp.getLoc(), keyRange.clearOp.getCryptoContext(),
+          currentKey);  // Clear the compressed key instead
+
+      // Remove the original clear operation
+      keyRange.clearOp.erase();
+
+      llvm::errs()
+          << "Updated clear operation to clear compressed key for rotation "
+          << rotationIndex << "\n";
+    }
+  }
+
+  Value createCompressedKeyAfterRotation(openfhe::RotOp rotOp,
+                                         Value keyToCompress,
+                                         unsigned targetLevel,
+                                         int32_t rotationIndex,
+                                         MLIRContext* ctx) {
+    // Verify inputs
+    if (!keyToCompress) {
+      llvm::errs() << "Warning: Cannot create compressed key from null key\n";
+      return nullptr;
+    }
+
     OpBuilder builder(rotOp);
     builder.setInsertionPointAfter(rotOp);
 
-    // Create compress_key operation right after the rotation
+    // Create compress_key operation right after the rotation that used the
+    // uncompressed key
     auto compressOp = builder.create<openfhe::CompressKeyOp>(
-        rotOp.getLoc(), rotOp.getEvalKey().getType(), rotOp.getCryptoContext(),
-        rotOp.getEvalKey(),  // Compress the original key
+        rotOp.getLoc(), keyToCompress.getType(), rotOp.getCryptoContext(),
+        keyToCompress,  // Compress the key that was just used
         builder.getI32IntegerAttr(targetLevel));
 
     // Add metadata for tracking
@@ -579,6 +804,96 @@ struct KeyCompression : impl::KeyCompressionBase<KeyCompression> {
         "rotation_index",
         IntegerAttr::get(IntegerType::get(ctx, 32), rotationIndex));
     compressOp->setAttr("optimal_placement", BoolAttr::get(ctx, true));
+
+    llvm::errs() << "Created compress_key operation for rotation "
+                 << rotationIndex << " to level " << targetLevel
+                 << " after rotation usage\n";
+
+    return compressOp.getResult();
+  }
+
+  Value findOriginalDeserializeKey(int32_t rotationIndex) {
+    Value result = nullptr;
+
+    getOperation()->walk([&](openfhe::DeserializeKeyOp deserOp) {
+      if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+        if (indexAttr.getInt() == rotationIndex) {
+          result = deserOp.getResult();
+          return WalkResult::interrupt();
+        }
+      }
+      return WalkResult::advance();
+    });
+
+    return result;
+  }
+
+  void replaceRotationWithCompressedKey(openfhe::RotOp originalRotOp,
+                                        Value compressedKey, MLIRContext* ctx) {
+    // Verify the compressed key is valid
+    if (!compressedKey) {
+      llvm::errs()
+          << "Warning: Cannot replace rotation with null compressed key\n";
+      return;
+    }
+
+    OpBuilder builder(originalRotOp);
+
+    // Create a new rotation operation with the compressed key
+    auto newRotOp = builder.create<openfhe::RotOp>(
+        originalRotOp.getLoc(), originalRotOp.getResult().getType(),
+        originalRotOp.getCryptoContext(), originalRotOp.getCiphertext(),
+        compressedKey  // Use compressed key instead of original
+    );
+
+    // Add metadata to track this replacement
+    newRotOp->setAttr("uses_compressed_key", BoolAttr::get(ctx, true));
+
+    // Replace all uses of the original rotation with the new one
+    originalRotOp.getResult().replaceAllUsesWith(newRotOp.getResult());
+
+    // Remove the original rotation operation
+    originalRotOp.erase();
+
+    llvm::errs() << "Replaced rotation operation with compressed key version\n";
+  }
+
+  Value createCompressedKeyAfterOperation(openfhe::RotOp insertAfterOp,
+                                          Value keyToCompress,
+                                          unsigned targetLevel,
+                                          int32_t rotationIndex,
+                                          MLIRContext* ctx) {
+    // This method is now deprecated - use createCompressedKeyAfterRotation
+    // instead Keeping for bootstrap compression compatibility
+    return createCompressedKeyAfterRotation(insertAfterOp, keyToCompress,
+                                            targetLevel, rotationIndex, ctx);
+  }
+
+  Value insertCompressionAfterOperation(openfhe::RotOp rotOp,
+                                        unsigned targetLevel,
+                                        int32_t rotationIndex,
+                                        MLIRContext* ctx) {
+    // This method should only be used for bootstrap compressions now
+    // For multi-level rotations, use insertCompressionWithDominancePreservation
+    // instead
+
+    OpBuilder builder(rotOp);
+    builder.setInsertionPointAfter(rotOp);
+
+    // Create compress_key operation right after the rotation
+    auto compressOp = builder.create<openfhe::CompressKeyOp>(
+        rotOp.getLoc(), rotOp.getEvalKey().getType(), rotOp.getCryptoContext(),
+        rotOp.getEvalKey(),  // Compress the rotation's key
+        builder.getI32IntegerAttr(targetLevel));
+
+    // Add metadata for tracking
+    compressOp->setAttr("bootstrap_compression", BoolAttr::get(ctx, true));
+    compressOp->setAttr(
+        "target_level",
+        IntegerAttr::get(IntegerType::get(ctx, 32), targetLevel));
+    compressOp->setAttr(
+        "rotation_index",
+        IntegerAttr::get(IntegerType::get(ctx, 32), rotationIndex));
 
     return compressOp.getResult();
   }
