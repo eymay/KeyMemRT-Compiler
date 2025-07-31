@@ -60,7 +60,13 @@ void MemoryEstimationResults::generateTextReport(llvm::raw_ostream &os) const {
     os << "    Total memory: " << formatBytes(usage.totalBytes) << "\n";
     os << "    Ciphertext memory: " << formatBytes(usage.ciphertextBytes)
        << "\n";
-    os << "    Key memory: " << formatBytes(usage.keyBytes) << "\n\n";
+    os << "    Key memory: " << formatBytes(usage.keyBytes) << "\n";
+
+    // Add debug check for impossible states
+    if (isa<openfhe::RotOp>(op) && usage.liveKeys == 0) {
+      os << "    *** ERROR: Rotation operation with 0 live keys! ***\n";
+    }
+    os << "\n";
   }
 
   os << "=== End Report ===\n";
@@ -132,8 +138,16 @@ struct MemoryEstimationPass : impl::MemoryEstimationBase<MemoryEstimationPass> {
   void runOnOperation() override {
     Operation *op = getOperation();
 
+    llvm::errs() << "=== DEBUG: MemoryEstimation Pass Starting ===\n";
+    llvm::errs() << "DEBUG: About to call runUnifiedLivenessAnalysis...\n";
+
     // Run the unified liveness analysis and get structured results
     UnifiedLivenessResults livenessResults = runUnifiedLivenessAnalysis(op);
+
+    llvm::errs() << "DEBUG: Got " << livenessResults.operationResults.size()
+                 << " operations from liveness analysis\n";
+    llvm::errs() << "DEBUG: This should match the timestep count from the "
+                    "analysis above!\n";
 
     // Collect memory estimation results
     MemoryEstimationResults results;
@@ -146,10 +160,49 @@ struct MemoryEstimationPass : impl::MemoryEstimationBase<MemoryEstimationPass> {
 
     // Process each operation's liveness information
     for (const auto &livenessInfo : livenessResults.operationResults) {
+      operationCount++;
+
+      // Debug first few operations
+      if (operationCount <= 5) {
+        llvm::errs() << "DEBUG: Processing op " << operationCount << " ("
+                     << livenessInfo.op->getName()
+                     << "): " << livenessInfo.liveCiphertextCount << " CTs, "
+                     << livenessInfo.liveKeyCount << " keys\n";
+      }
+
       MemoryUsage usage;
       usage.liveCiphertexts = livenessInfo.liveCiphertextCount;
       usage.liveKeys = livenessInfo.liveKeyCount;
       usage.totalTowers = livenessInfo.totalTowers;
+
+      // CRITICAL VALIDATION: Check for impossible rotation operations
+      if (isa<openfhe::RotOp>(livenessInfo.op) &&
+          livenessInfo.liveKeyCount == 0) {
+        llvm::errs() << "FATAL ERROR: Rotation operation " << operationCount
+                     << " has 0 live keys - this indicates the liveness "
+                        "analysis is broken!\n";
+        llvm::errs() << "This rotation operation cannot execute without "
+                        "evaluation keys.\n";
+
+        // Get the rotation index this operation needs
+        if (auto rotOp = dyn_cast<openfhe::RotOp>(livenessInfo.op)) {
+          Value evalKey = rotOp.getEvalKey();
+          if (auto deserOp =
+                  evalKey.getDefiningOp<openfhe::DeserializeKeyOp>()) {
+            if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+              int64_t requiredKeyIndex = indexAttr.getInt();
+              llvm::errs() << "Required key index: " << requiredKeyIndex
+                           << "\n";
+            }
+          }
+        }
+
+        // This is a hard error
+        livenessInfo.op->emitError(
+            "Liveness analysis shows rotation operation with 0 live keys");
+        signalPassFailure();
+        return;
+      }
 
       // Calculate ciphertext memory
       for (unsigned towers : livenessInfo.ciphertextTowerCounts) {
@@ -158,19 +211,26 @@ struct MemoryEstimationPass : impl::MemoryEstimationBase<MemoryEstimationPass> {
         usage.ciphertextBytes += ctMemory;
       }
 
-      // Calculate key memory using rotation indices and depths
+      // Calculate key memory using exact tower information
       for (size_t i = 0; i < livenessInfo.keyTowerCounts.size(); ++i) {
-        unsigned towers = livenessInfo.keyTowerCounts[i];
+        unsigned totalTowers = livenessInfo.keyTowerCounts[i];
 
-        // Extract Q and P towers from total towers
-        unsigned qTowers = (towers > fixedPTowers) ? towers - fixedPTowers : 1;
+        // The keyTowerCounts already contains the exact tower count from:
+        // 1. deserialize_key operations with key_towers attribute, or
+        // 2. calculated towers from key_depth attributes, or
+        // 3. global key tracking in bootstrap operations
+
+        // For keys, total towers = Q towers + P towers
+        // Split into Q and P for memory calculation
+        unsigned qTowers =
+            (totalTowers > fixedPTowers) ? totalTowers - fixedPTowers : 1;
         unsigned pTowers = fixedPTowers;
 
-        // If we have key depth information, use it for more accurate
-        // calculation
-        if (i < livenessInfo.keyDepths.size()) {
-          unsigned keyDepth = livenessInfo.keyDepths[i];
-          qTowers = calculateQTowersFromKeyDepth(keyDepth);
+        // Debug key memory calculation for first few operations
+        if (operationCount <= 5) {
+          llvm::errs() << "  Key " << i << ": " << totalTowers
+                       << " total towers -> " << qTowers << " Q + " << pTowers
+                       << " P towers\n";
         }
 
         uint64_t keyMemory =
@@ -183,7 +243,6 @@ struct MemoryEstimationPass : impl::MemoryEstimationBase<MemoryEstimationPass> {
 
       // Update statistics
       totalMemory += usage.totalBytes;
-      operationCount++;
       results.peakMemoryBytes =
           std::max(results.peakMemoryBytes, usage.totalBytes);
     }
@@ -192,6 +251,10 @@ struct MemoryEstimationPass : impl::MemoryEstimationBase<MemoryEstimationPass> {
     if (operationCount > 0) {
       results.averageMemoryBytes = totalMemory / operationCount;
     }
+
+    llvm::errs() << "DEBUG: Processed " << operationCount
+                 << " operations, peak memory: "
+                 << results.formatBytes(results.peakMemoryBytes) << "\n";
 
     // Generate output based on format
     if (outputFormat == "json") {
@@ -221,15 +284,6 @@ struct MemoryEstimationPass : impl::MemoryEstimationBase<MemoryEstimationPass> {
         results.generateTextReport(file);
       }
     }
-  }
-
- private:
-  unsigned calculateQTowersFromKeyDepth(unsigned keyDepth) {
-    // Formula: mult_depth - level + 2
-    if (keyDepth > multDepth + 2) {
-      return 1;  // Minimum towers
-    }
-    return multDepth - keyDepth + 2;
   }
 };
 

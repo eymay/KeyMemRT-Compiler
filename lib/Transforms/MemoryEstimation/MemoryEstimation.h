@@ -52,7 +52,6 @@ struct MemoryEstimationResults {
   void generateTextReport(llvm::raw_ostream &os) const;
   void generateJSONReport(llvm::raw_ostream &os) const;
 
- private:
   std::string formatBytes(uint64_t bytes) const;
 };
 

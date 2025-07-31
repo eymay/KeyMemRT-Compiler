@@ -67,7 +67,7 @@ class LivenessState {
   // Additional key information for analysis results
   llvm::DenseMap<Value, int64_t> keyRotationIndices;
   llvm::DenseMap<Value, unsigned> keyDepths;
-
+  llvm::DenseMap<int64_t, unsigned> globalKeyTowers;
   // Tower calculations
   unsigned getTotalTowers() const;
   unsigned getMaxTowerNumber() const;

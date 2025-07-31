@@ -78,11 +78,13 @@
 #include "lib/Transforms/LinalgCanonicalizations/LinalgCanonicalizations.h"
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 #include "lib/Transforms/LowerPolynomialEval/LowerPolynomialEval.h"
+#include "lib/Transforms/MemoryEstimation/MemoryEstimation.h"
 #include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h"
 #include "lib/Transforms/OperationBalancer/OperationBalancer.h"
 #include "lib/Transforms/OptimizeRelinearization/OptimizeRelinearization.h"
 #include "lib/Transforms/PolynomialApproximation/PolynomialApproximation.h"
 #include "lib/Transforms/PopulateScale/PopulateScale.h"
+#include "lib/Transforms/ProfileAnnotator/ProfileAnnotator.h"
 #include "lib/Transforms/PropagateAnnotation/PropagateAnnotation.h"
 #include "lib/Transforms/RotationDecompose/RotationDecompose.h"
 #include "lib/Transforms/RotationDepthAnalysis/RotationDepthAnalysis.h"
@@ -295,6 +297,8 @@ int main(int argc, char **argv) {
   registerLowerLinearTransformPasses();
   registerBootstrapRotationAnalysisPasses();
   registerFHEFunctionOutliningPasses();
+  registerProfileAnnotatorPasses();
+  registerMemoryEstimationPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS
 #ifndef HEIR_ABC_BINARY

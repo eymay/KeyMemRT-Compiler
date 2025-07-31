@@ -17,7 +17,7 @@ namespace mlir {
 namespace heir {
 
 //===----------------------------------------------------------------------===//
-// LivenessState Implementation - Simple like RotationDepthAnalysis
+// LivenessState Implementation
 //===----------------------------------------------------------------------===//
 
 unsigned LivenessState::getTotalTowers() const {
@@ -26,6 +26,9 @@ unsigned LivenessState::getTotalTowers() const {
     total += towers;
   }
   for (const auto &[value, towers] : keyTowers) {
+    total += towers;
+  }
+  for (const auto &[rotIndex, towers] : globalKeyTowers) {
     total += towers;
   }
   return total;
@@ -39,6 +42,9 @@ unsigned LivenessState::getMaxTowerNumber() const {
   for (const auto &[value, towers] : keyTowers) {
     maxTowers = std::max(maxTowers, towers);
   }
+  for (const auto &[rotIndex, towers] : globalKeyTowers) {
+    maxTowers = std::max(maxTowers, towers);
+  }
   return maxTowers;
 }
 
@@ -46,12 +52,16 @@ unsigned LivenessState::getCiphertextCount() const {
   return ciphertextTowers.size();
 }
 
-unsigned LivenessState::getKeyCount() const { return keyTowers.size(); }
+unsigned LivenessState::getKeyCount() const {
+  return keyTowers.size() + globalKeyTowers.size();
+}
 
 bool LivenessState::operator==(const LivenessState &other) const {
-  // Simple comparison like in existing analyses
-  return ciphertextTowers.size() == other.ciphertextTowers.size() &&
-         keyTowers.size() == other.keyTowers.size();
+  return ciphertextTowers == other.ciphertextTowers &&
+         keyTowers == other.keyTowers && isKeyMap == other.isKeyMap &&
+         keyRotationIndices == other.keyRotationIndices &&
+         keyDepths == other.keyDepths &&
+         globalKeyTowers == other.globalKeyTowers;
 }
 
 LivenessState LivenessState::join(const LivenessState &lhs,
@@ -78,12 +88,71 @@ LivenessState LivenessState::join(const LivenessState &lhs,
     }
   }
 
-  // Merge key flags
+  // Merge other key information
   for (const auto &[value, isKey] : rhs.isKeyMap) {
     result.isKeyMap[value] = isKey;
   }
 
+  for (const auto &[value, rotIndex] : rhs.keyRotationIndices) {
+    result.keyRotationIndices[value] = rotIndex;
+  }
+
+  for (const auto &[value, depth] : rhs.keyDepths) {
+    result.keyDepths[value] = depth;
+  }
+
+  for (const auto &[rotIndex, towers] : rhs.globalKeyTowers) {
+    result.globalKeyTowers[rotIndex] =
+        std::max(result.globalKeyTowers[rotIndex], towers);
+  }
+
   return result;
+}
+
+OperationLivenessInfo LivenessState::toOperationInfo(Operation *op) const {
+  OperationLivenessInfo info(op);
+
+  // Fill in ciphertext information
+  info.liveCiphertextCount = getCiphertextCount();
+  for (const auto &[value, towers] : ciphertextTowers) {
+    info.ciphertextTowerCounts.push_back(towers);
+    info.totalCiphertextTowers += towers;
+  }
+
+  // Fill in key information from both SSA keys and global keys
+  info.liveKeyCount = getKeyCount();
+
+  // SSA keys (explicit evaluation keys)
+  for (const auto &[value, towers] : keyTowers) {
+    info.keyTowerCounts.push_back(towers);
+    info.totalKeyTowers += towers;
+
+    // Add rotation index if available
+    auto rotIt = keyRotationIndices.find(value);
+    if (rotIt != keyRotationIndices.end()) {
+      info.keyRotationIndices.push_back(rotIt->second);
+    }
+
+    // Add depth if available
+    auto depthIt = keyDepths.find(value);
+    if (depthIt != keyDepths.end()) {
+      info.keyDepths.push_back(depthIt->second);
+    }
+  }
+
+  // Global keys (bootstrap keys stored in crypto context)
+  for (const auto &[rotIndex, towers] : globalKeyTowers) {
+    info.keyTowerCounts.push_back(towers);
+    info.totalKeyTowers += towers;
+    info.keyRotationIndices.push_back(rotIndex);
+    info.keyDepths.push_back(0);  // Default depth for global keys
+  }
+
+  // Summary information
+  info.maxTowerNumber = getMaxTowerNumber();
+  info.totalTowers = getTotalTowers();
+
+  return info;
 }
 
 void LivenessState::print(raw_ostream &os) const {
@@ -96,135 +165,51 @@ void LivenessState::print(raw_ostream &os) const {
 }
 
 //===----------------------------------------------------------------------===//
-// UnifiedLivenessAnalysis Implementation
+// UnifiedLivenessResults Implementation
+//===----------------------------------------------------------------------===//
+
+void UnifiedLivenessResults::addOperationInfo(
+    const OperationLivenessInfo &info) {
+  operationResults.push_back(info);
+}
+
+const OperationLivenessInfo *UnifiedLivenessResults::getInfoForOperation(
+    Operation *op) const {
+  for (const auto &info : operationResults) {
+    if (info.op == op) {
+      return &info;
+    }
+  }
+  return nullptr;
+}
+
+unsigned UnifiedLivenessResults::getMaxTowerCount() const {
+  unsigned maxTowers = 0;
+  for (const auto &info : operationResults) {
+    maxTowers = std::max(maxTowers, info.maxTowerNumber);
+  }
+  return maxTowers;
+}
+
+void UnifiedLivenessResults::print(raw_ostream &os) const {
+  os << "UnifiedLivenessResults: " << operationResults.size()
+     << " operations\n";
+  for (const auto &info : operationResults) {
+    os << "  Op: " << info.op->getName()
+       << ", Live CTs: " << info.liveCiphertextCount
+       << ", Live Keys: " << info.liveKeyCount
+       << ", Total Towers: " << info.totalTowers << "\n";
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Unused dataflow analysis methods - kept for interface compatibility
 //===----------------------------------------------------------------------===//
 
 LogicalResult UnifiedLivenessAnalysis::visitOperation(
     Operation *op, ArrayRef<const LivenessLattice *> operands,
     ArrayRef<LivenessLattice *> results) {
-  LLVM_DEBUG(llvm::dbgs() << "Analyzing op: " << *op << "\n");
-
-  // Start with the current state from operands
-  LivenessState currentState;
-  if (!operands.empty() && operands[0]) {
-    currentState = operands[0]->getValue();
-  }
-
-  // Utility to propagate state to all results
-  auto propagateToResults = [&](const LivenessState &state) {
-    for (auto *result : results) {
-      ChangeResult changed = result->join(state);
-      propagateIfChanged(result, changed);
-    }
-  };
-
-  return llvm::TypeSwitch<Operation &, LogicalResult>(*op)
-      // Handle key deserialize operations
-      .Case<openfhe::DeserializeKeyOp>([&](auto deserOp) {
-        Value evalKey = deserOp.getResult();
-        unsigned towers = getKeyTowerCount(evalKey);
-        int64_t rotationIndex = getKeyRotationIndex(deserOp);
-        unsigned keyDepth = getKeyDepthFromDeserialize(deserOp);
-
-        currentState.keyTowers[evalKey] = towers;
-        currentState.isKeyMap[evalKey] = true;
-        currentState.keyRotationIndices[evalKey] = rotationIndex;
-        currentState.keyDepths[evalKey] = keyDepth;
-
-        LLVM_DEBUG(llvm::dbgs()
-                   << "  Added live key with " << towers << " towers\n");
-        propagateToResults(currentState);
-        return success();
-      })
-
-      // Handle key clearing operations
-      .Case<openfhe::ClearKeyOp>([&](auto clearOp) {
-        Value evalKey = clearOp.getEvalKey();
-        currentState.keyTowers.erase(evalKey);
-        currentState.isKeyMap.erase(evalKey);
-        currentState.keyRotationIndices.erase(evalKey);
-        currentState.keyDepths.erase(evalKey);
-
-        LLVM_DEBUG(llvm::dbgs() << "  Cleared key from liveness\n");
-        propagateToResults(currentState);
-        return success();
-      })
-
-      // Handle ciphertext-producing operations
-      .Case<openfhe::AddOp, openfhe::MulOp, openfhe::RotOp,
-            openfhe::BootstrapOp, openfhe::RelinOp, openfhe::ModReduceOp>(
-          [&](Operation *cipherOp) {
-            // Add the result ciphertext to live set
-            if (cipherOp->getNumResults() > 0) {
-              Value result = cipherOp->getResult(0);
-              unsigned towers = getCiphertextTowerCount(result);
-
-              currentState.ciphertextTowers[result] = towers;
-              currentState.isKeyMap[result] = false;
-
-              LLVM_DEBUG(llvm::dbgs() << "  Added live ciphertext with "
-                                      << towers << " towers\n");
-            }
-
-            // Remove consumed operands if they have only one use
-            for (Value operand : cipherOp->getOperands()) {
-              if (operand.hasOneUse()) {
-                currentState.ciphertextTowers.erase(operand);
-                currentState.keyTowers.erase(operand);
-                currentState.isKeyMap.erase(operand);
-                currentState.keyRotationIndices.erase(operand);
-                currentState.keyDepths.erase(operand);
-              }
-            }
-
-            propagateToResults(currentState);
-            return success();
-          })
-
-      // Handle operations that may end ciphertext lifetime
-      .Case<func::ReturnOp>([&](auto returnOp) {
-        // Remove returned values from live set as they leave the function
-        for (Value operand : returnOp.getOperands()) {
-          currentState.ciphertextTowers.erase(operand);
-          currentState.keyTowers.erase(operand);
-          currentState.isKeyMap.erase(operand);
-          currentState.keyRotationIndices.erase(operand);
-          currentState.keyDepths.erase(operand);
-        }
-
-        propagateToResults(currentState);
-        return success();
-      })
-
-      // Handle general operations
-      .Default([&](Operation &defaultOp) {
-        // Remove operands with single use
-        for (Value operand : defaultOp.getOperands()) {
-          if (operand.hasOneUse()) {
-            currentState.ciphertextTowers.erase(operand);
-            currentState.keyTowers.erase(operand);
-            currentState.isKeyMap.erase(operand);
-            currentState.keyRotationIndices.erase(operand);
-            currentState.keyDepths.erase(operand);
-          }
-        }
-
-        // Add any new results to the live set
-        for (Value result : defaultOp.getResults()) {
-          if (isCiphertextType(result.getType())) {
-            unsigned towers = getCiphertextTowerCount(result);
-            currentState.ciphertextTowers[result] = towers;
-            currentState.isKeyMap[result] = false;
-          } else if (isKeyType(result.getType())) {
-            unsigned towers = getKeyTowerCount(result);
-            currentState.keyTowers[result] = towers;
-            currentState.isKeyMap[result] = true;
-          }
-        }
-
-        propagateToResults(currentState);
-        return success();
-      });
+  return success();
 }
 
 void UnifiedLivenessAnalysis::setToEntryState(LivenessLattice *lattice) {
@@ -240,119 +225,239 @@ bool UnifiedLivenessAnalysis::isKeyType(Type type) const {
 }
 
 unsigned UnifiedLivenessAnalysis::getCiphertextTowerCount(Value value) const {
-  // Get tower count from result_towers attribute if available
-  if (auto defOp = value.getDefiningOp()) {
-    if (auto towersAttr = defOp->getAttrOfType<IntegerAttr>("result_towers")) {
-      return towersAttr.getInt();
-    }
-  }
-
-  // Fallback: try to infer from operation type
-  if (auto defOp = value.getDefiningOp()) {
-    // Multiplication typically increases tower count
-    if (isa<openfhe::MulOp>(defOp)) {
-      return 5;  // Conservative estimate
-    }
-    // Bootstrap resets to high level
-    if (isa<openfhe::BootstrapOp>(defOp)) {
-      return 10;  // Conservative estimate
-    }
-  }
-
-  return 3;  // Default conservative estimate
+  return 3;  // Unused
 }
 
 unsigned UnifiedLivenessAnalysis::getKeyTowerCount(Value value,
                                                    unsigned multDepth) const {
-  if (auto defOp = value.getDefiningOp()) {
-    if (auto deserializeOp = dyn_cast<openfhe::DeserializeKeyOp>(defOp)) {
-      unsigned depth = getKeyDepthFromDeserialize(deserializeOp);
-      unsigned qTowers = calculateKeyQTowers(multDepth, depth);
-      return qTowers + FIXED_P_TOWERS;
-    }
-  }
-
-  // Default fallback
-  return FIXED_P_TOWERS + 3;
+  return 7;  // Unused
 }
 
 unsigned UnifiedLivenessAnalysis::getKeyDepthFromDeserialize(
     Operation *deserializeOp) const {
-  if (auto depthAttr = deserializeOp->getAttrOfType<IntegerAttr>("key_depth")) {
-    return depthAttr.getInt();
-  }
-  return 0;  // Default depth
+  return 0;  // Unused
 }
 
 int64_t UnifiedLivenessAnalysis::getKeyRotationIndex(
     Operation *deserializeOp) const {
-  if (auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(deserializeOp)) {
-    return deserOp.getEvalKey().getType().getRotationIndex().getInt();
-  }
-  return 0;  // Default rotation index
+  return 0;  // Unused
 }
 
 unsigned UnifiedLivenessAnalysis::calculateKeyQTowers(unsigned multDepth,
                                                       unsigned level) const {
-  // Formula: mult_depth - level + 2
-  if (level > multDepth + 2) {
-    return 1;  // Minimum towers
-  }
-  return multDepth - level + 2;
+  return 3;  // Unused
 }
 
 //===----------------------------------------------------------------------===//
-// Helper Function Implementation
+// Simple Timestep-Based Liveness Analysis
 //===----------------------------------------------------------------------===//
+
+// Helper to check if we should ignore this operation type
+static bool shouldIgnoreOperation(Operation *op) {
+  // Ignore arith, tensor, and other non-FHE operations
+  StringRef opName = op->getName().getStringRef();
+  return opName.starts_with("arith.") || opName.starts_with("tensor.") ||
+         opName.starts_with("func.") ||
+         isa<openfhe::MakePackedPlaintextOp,
+             openfhe::MakeCKKSPackedPlaintextOp>(op);
+}
+
+// Helper to check if this is a management operation (doesn't count as timestep)
+static bool isManagementOperation(Operation *op) {
+  return isa<openfhe::DeserializeKeyOp, openfhe::ClearKeyOp,
+             openfhe::ClearCtOp>(op);
+}
+
+// Helper to check if this is a computational FHE operation (counts as timestep)
+static bool isComputationalOperation(Operation *op) {
+  return isa<openfhe::AddOp, openfhe::SubOp, openfhe::MulOp,
+             openfhe::MulPlainOp, openfhe::RotOp, openfhe::BootstrapOp,
+             openfhe::RelinOp, openfhe::ModReduceOp, openfhe::LevelReduceOp,
+             openfhe::KeySwitchOp, openfhe::AutomorphOp, openfhe::ChebyshevOp>(
+      op);
+}
+
+// Get towers from result_towers attribute or default
+static unsigned getTowerCount(Operation *op, unsigned resultIndex = 0) {
+  if (auto towersAttr = op->getAttrOfType<IntegerAttr>("result_towers")) {
+    return towersAttr.getInt();
+  }
+
+  // Default based on operation type
+  if (isa<openfhe::BootstrapOp>(op)) return 10;  // High level after bootstrap
+  if (isa<openfhe::MulOp>(op)) return 5;         // Multiplication reduces level
+  return 3;                                      // Default
+}
 
 UnifiedLivenessResults runUnifiedLivenessAnalysis(Operation *op) {
   UnifiedLivenessResults results;
 
-  // Set up dataflow solver
-  DataFlowSolver solver;
-  solver.load<dataflow::DeadCodeAnalysis>();
-  solver.load<dataflow::SparseConstantPropagation>();
-  solver.load<UnifiedLivenessAnalysis>();
+  llvm::errs() << "=== Starting Simple Timestep-Based Liveness Analysis ===\n";
 
-  if (failed(solver.initializeAndRun(op))) {
-    // Return empty results on failure
-    return results;
-  }
+  // Current live state
+  llvm::DenseSet<Value> liveCiphertexts;  // Currently live ciphertext values
+  llvm::DenseMap<int64_t, unsigned> liveKeys;  // rotation_index -> tower_count
 
-  // Walk operations and collect results
+  unsigned timestep = 0;
+  unsigned totalOpsProcessed = 0;
+
   op->walk([&](Operation *walkOp) {
-    // For now, create a mock state since we can't easily query the solver
-    // This will be replaced with proper solver querying later
-    LivenessState mockState;
+    totalOpsProcessed++;
 
-    // Add heuristic data based on operation type
-    if (isa<openfhe::AddOp, openfhe::MulOp, openfhe::RotOp>(walkOp)) {
-      // Mock some live ciphertexts
-      for (Value operand : walkOp->getOperands()) {
-        if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(
-                operand.getType())) {
-          mockState.ciphertextTowers[operand] = 3;  // Conservative estimate
-          mockState.isKeyMap[operand] = false;
+    // Skip operations we don't care about
+    if (shouldIgnoreOperation(walkOp)) {
+      return;
+    }
+
+    // Handle management operations (update state but don't count as timestep)
+    if (isManagementOperation(walkOp)) {
+      llvm::TypeSwitch<Operation *>(walkOp)
+          .Case<openfhe::DeserializeKeyOp>(
+              [&](openfhe::DeserializeKeyOp deserOp) {
+                if (auto indexAttr =
+                        deserOp->getAttrOfType<IntegerAttr>("index")) {
+                  int64_t keyIndex = indexAttr.getInt();
+                  unsigned towers = 7;  // Default fallback
+
+                  // First priority: use exact key_towers attribute if available
+                  if (auto keyTowersAttr =
+                          deserOp->getAttrOfType<IntegerAttr>("key_towers")) {
+                    towers = keyTowersAttr.getInt();
+                    llvm::errs()
+                        << "  Management: Added key " << keyIndex << " ("
+                        << towers << " towers from key_towers attr)\n";
+                  }
+                  // Second priority: calculate from key_depth attribute
+                  else if (auto depthAttr = deserOp->getAttrOfType<IntegerAttr>(
+                               "key_depth")) {
+                    unsigned depth = depthAttr.getInt();
+                    unsigned qTowers = std::max(1u, 10u - depth + 2u);
+                    towers = qTowers + 4;  // Q towers + 4 P towers
+                    llvm::errs()
+                        << "  Management: Added key " << keyIndex << " ("
+                        << towers << " towers from depth " << depth << ")\n";
+                  }
+                  // Fallback: default estimate
+                  else {
+                    llvm::errs() << "  Management: Added key " << keyIndex
+                                 << " (" << towers << " towers - default)\n";
+                  }
+
+                  liveKeys[keyIndex] = towers;
+                }
+              })
+          .Case<openfhe::ClearKeyOp>([&](openfhe::ClearKeyOp clearOp) {
+            if (auto evalKey = clearOp.getEvalKey()) {
+              if (auto deserOp =
+                      evalKey.getDefiningOp<openfhe::DeserializeKeyOp>()) {
+                if (auto indexAttr =
+                        deserOp->getAttrOfType<IntegerAttr>("index")) {
+                  int64_t keyIndex = indexAttr.getInt();
+                  liveKeys.erase(keyIndex);
+                  llvm::errs()
+                      << "  Management: Removed key " << keyIndex << "\n";
+                }
+              }
+            }
+          })
+          .Case<openfhe::ClearCtOp>([&](openfhe::ClearCtOp clearOp) {
+            Value ct = clearOp.getCiphertext();
+            liveCiphertexts.erase(ct);
+            llvm::errs() << "  Management: Cleared ciphertext\n";
+          });
+      return;  // Don't count as timestep
+    }
+
+    // Handle computational operations (count as timestep)
+    if (isComputationalOperation(walkOp)) {
+      timestep++;
+
+      // CRITICAL VALIDATION: Check rotation operations have required keys
+      if (auto rotOp = dyn_cast<openfhe::RotOp>(walkOp)) {
+        // Get the rotation index from the evaluation key operand
+        Value evalKey = rotOp.getEvalKey();
+        if (auto deserOp = evalKey.getDefiningOp<openfhe::DeserializeKeyOp>()) {
+          if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+            int64_t requiredKeyIndex = indexAttr.getInt();
+
+            if (liveKeys.find(requiredKeyIndex) == liveKeys.end()) {
+              llvm::errs() << "FATAL ERROR: Rotation operation at timestep "
+                           << timestep << " requires key " << requiredKeyIndex
+                           << " but it is not live! Available keys: [";
+              for (auto &[keyIdx, towers] : liveKeys) {
+                llvm::errs() << keyIdx << " ";
+              }
+              llvm::errs() << "]\n";
+
+              // This is a hard error - the program cannot execute
+              walkOp->emitError("Rotation operation requires key index ")
+                  << requiredKeyIndex
+                  << " but it is not live in crypto context";
+              return;
+            }
+          }
         }
       }
-    }
 
-    if (auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(walkOp)) {
-      Value evalKey = deserOp.getResult();
-      mockState.keyTowers[evalKey] = 7;  // Conservative estimate
-      mockState.isKeyMap[evalKey] = true;
-      mockState.keyRotationIndices[evalKey] =
-          deserOp.getEvalKey().getType().getRotationIndex().getInt();
-      mockState.keyDepths[evalKey] = 0;  // Default for now
-    }
+      // Debug what operations we're seeing after timestep 10
+      if (timestep > 10 && timestep <= 15) {
+        llvm::errs() << "DEBUG: Found computational op " << timestep << ": "
+                     << walkOp->getName() << "\n";
+      }
 
-    // Convert to structured result
-    if (!mockState.ciphertextTowers.empty() || !mockState.keyTowers.empty()) {
-      OperationLivenessInfo info = mockState.toOperationInfo(walkOp);
+      // Remove operands with single use (consumed by this operation)
+      for (Value operand : walkOp->getOperands()) {
+        if (operand.hasOneUse() &&
+            isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(
+                operand.getType())) {
+          liveCiphertexts.erase(operand);
+        }
+      }
+
+      // Add new ciphertext results
+      for (Value result : walkOp->getResults()) {
+        if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(
+                result.getType())) {
+          liveCiphertexts.insert(result);
+        }
+      }
+
+      // Create current state for recording
+      LivenessState currentState;
+
+      // Add live ciphertexts to state
+      for (Value ct : liveCiphertexts) {
+        unsigned towers = getTowerCount(ct.getDefiningOp());
+        currentState.ciphertextTowers[ct] = towers;
+        currentState.isKeyMap[ct] = false;
+      }
+
+      // For bootstrap operations, add all live keys
+      if (isa<openfhe::BootstrapOp>(walkOp)) {
+        for (auto &[rotIndex, towers] : liveKeys) {
+          currentState.globalKeyTowers[rotIndex] = towers;
+        }
+      }
+
+      // Record this timestep
+      OperationLivenessInfo info = currentState.toOperationInfo(walkOp);
       results.addOperationInfo(info);
+
+      // Debug output for first 20 timesteps and every 100th after that
+      if (timestep <= 20 || timestep % 100 == 0) {
+        llvm::errs() << "Timestep " << timestep << " (" << walkOp->getName()
+                     << "): " << liveCiphertexts.size() << " live CTs, "
+                     << liveKeys.size() << " live keys";
+        if (isa<openfhe::BootstrapOp>(walkOp)) {
+          llvm::errs() << " [BOOTSTRAP]";
+        }
+        llvm::errs() << "\n";
+      }
     }
   });
 
+  llvm::errs() << "=== Analysis Complete: " << timestep << " timesteps, "
+               << totalOpsProcessed << " total operations processed ===\n";
   return results;
 }
 
