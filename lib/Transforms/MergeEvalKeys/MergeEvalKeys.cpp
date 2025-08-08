@@ -59,7 +59,22 @@ struct MergeEvalKeys : impl::MergeEvalKeysBase<MergeEvalKeys> {
             if (!optimization.isValid()) {
               return WalkResult::advance();
             }
-
+            auto firstDeserOp =
+                cast<openfhe::DeserializeKeyOp>(optimization.firstDeser);
+            if (deserOp->hasAttr("key_depth") &&
+                firstDeserOp->hasAttr("key_depth")) {
+              auto firstLevel =
+                  firstDeserOp->getAttrOfType<IntegerAttr>("key_depth")
+                      .getInt();
+              auto secondLevel =
+                  deserOp->getAttrOfType<IntegerAttr>("key_depth").getInt();
+              if (firstLevel != secondLevel) {
+                return WalkResult::advance();  // Skip merging different levels
+              }
+            } else if (!firstDeserOp->hasAttr("key_depth") &&
+                       deserOp->hasAttr("key_depth")) {
+              firstDeserOp->setAttr("key_depth", deserOp->getAttr("key_depth"));
+            }
             // Replace uses of the second deserialize with the first one
             deserOp.getResult().replaceAllUsesWith(
                 optimization.firstDeser->getResult(0));
