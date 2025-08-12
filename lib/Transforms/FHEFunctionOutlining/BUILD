@@ -12,7 +12,7 @@ cc_library(
     deps = [
         ":pass_inc_gen",
         "@heir//lib/Dialect/LWE/IR:Dialect",
-        "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@heir//lib/Dialect/CKKS/IR:Dialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
