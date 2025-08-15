@@ -34,17 +34,30 @@ struct DAGNode {
 
 // Helper to check if operation should be included in analysis
 static bool isRelevantOperation(Operation *op) {
-  // Skip constants, function calls, and other non-computational ops
-  if (isa<arith::ConstantOp>(op) || isa<func::CallOp>(op) ||
-      isa<func::ReturnOp>(op)) {
+  // Skip function calls and return ops, but keep constants for now
+  if (isa<func::CallOp>(op) || isa<func::ReturnOp>(op)) {
     return false;
   }
 
   // Include CKKS operations and other computational ops
-  return isa<ckks::LinearTransformOp>(op) || isa<ckks::MulOp>(op) ||
-         isa<ckks::AddOp>(op) || isa<ckks::SubOp>(op) ||
-         isa<ckks::RotateOp>(op) || isa<ckks::MulPlainOp>(op) ||
-         isa<ckks::AddPlainOp>(op);
+  if (isa<ckks::LinearTransformOp>(op) || isa<ckks::MulOp>(op) ||
+      isa<ckks::AddOp>(op) || isa<ckks::SubOp>(op) || isa<ckks::RotateOp>(op) ||
+      isa<ckks::MulPlainOp>(op) || isa<ckks::AddPlainOp>(op) ||
+      isa<ckks::BootstrapOp>(op) || isa<ckks::ChebyshevOp>(op)) {
+    return true;
+  }
+
+  // Include LWE operations
+  if (op->getDialect()->getNamespace() == "lwe") {
+    return true;
+  }
+
+  // Include constants - we'll filter out unused ones later
+  if (isa<arith::ConstantOp>(op)) {
+    return true;
+  }
+
+  return false;
 }
 
 // Simple DAG analyzer for finding split points
@@ -55,7 +68,7 @@ class SimpleDAGAnalyzer {
 
  public:
   void analyze(func::FuncOp funcOp) {
-    // Create nodes for relevant operations
+    // First pass: Create nodes for all relevant operations
     int index = 0;
     funcOp.walk([&](Operation *op) {
       if (isRelevantOperation(op)) {
@@ -80,6 +93,31 @@ class SimpleDAGAnalyzer {
     LLVM_DEBUG(llvm::dbgs() << "Built DAG with " << nodes.size() << " nodes\n");
   }
 
+  // Get constants that are directly used by operations in a segment
+  llvm::DenseSet<Operation *> getSegmentConstants(int startIdx, int endIdx) {
+    llvm::DenseSet<Operation *> segmentConstants;
+
+    // Only include constants that are directly used by operations in this
+    // segment
+    for (int i = startIdx; i < endIdx; i++) {
+      if (auto node = getNode(i)) {
+        Operation *op = node->op;
+        if (!isa<arith::ConstantOp>(op)) {
+          // Check each operand of this operation
+          for (Value operand : op->getOperands()) {
+            if (auto defOp = operand.getDefiningOp()) {
+              if (isa<arith::ConstantOp>(defOp)) {
+                segmentConstants.insert(defOp);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return segmentConstants;
+  }
+
   // Find split points that minimize cross-segment dependencies
   std::vector<int> findSplitPoints(int splitCount) {
     if (nodes.empty() || splitCount <= 1) {
@@ -91,57 +129,58 @@ class SimpleDAGAnalyzer {
 
     std::vector<int> splitPoints;
 
-    // Simple strategy: find points with minimal forward dependencies
+    // Simple strategy: divide roughly equally by node count
+    // but try to avoid splitting in the middle of heavy dependency chains
     for (int i = 1; i < splitCount; i++) {
-      int targetSplit = i * nodesPerSegment;
-      int bestSplit = findBestSplitNear(targetSplit, nodesPerSegment / 2);
+      int candidateSplit = i * nodesPerSegment;
+
+      // Look for a better split point within a small window
+      int bestSplit = candidateSplit;
+      int minDependencies = INT_MAX;
+
+      int windowStart = std::max(0, candidateSplit - 2);
+      int windowEnd = std::min(totalNodes, candidateSplit + 3);
+
+      for (int j = windowStart; j < windowEnd; j++) {
+        int crossDeps = countCrossDependencies(j);
+        if (crossDeps < minDependencies) {
+          minDependencies = crossDeps;
+          bestSplit = j;
+        }
+      }
+
       splitPoints.push_back(bestSplit);
     }
+
+    LLVM_DEBUG(llvm::dbgs() << "Found split points: ");
+    for (int sp : splitPoints) {
+      LLVM_DEBUG(llvm::dbgs() << sp << " ");
+    }
+    LLVM_DEBUG(llvm::dbgs() << "\n");
 
     return splitPoints;
   }
 
- private:
-  // Find the best split point near a target index
-  int findBestSplitNear(int target, int searchRadius) {
-    int bestSplit = target;
-    int minCrossingEdges = INT_MAX;
-
-    int start = std::max(1, target - searchRadius);
-    int end = std::min((int)nodes.size() - 1, target + searchRadius);
-
-    for (int split = start; split < end; split++) {
-      int crossingEdges = countCrossingEdges(split);
-      if (crossingEdges < minCrossingEdges) {
-        minCrossingEdges = crossingEdges;
-        bestSplit = split;
-      }
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "Best split at " << bestSplit << " with "
-                            << minCrossingEdges << " crossing edges\n");
-    return bestSplit;
-  }
-
-  // Count edges that cross a potential split point
-  int countCrossingEdges(int splitPoint) {
-    int crossingEdges = 0;
-
-    for (int i = 0; i < splitPoint; i++) {
-      for (DAGNode *successor : nodes[i]->successors) {
-        if (successor->index >= splitPoint) {
-          crossingEdges++;
+  int countCrossDependencies(int splitPoint) {
+    int count = 0;
+    for (int i = splitPoint; i < static_cast<int>(nodes.size()); i++) {
+      if (auto node = getNode(i)) {
+        for (auto pred : node->predecessors) {
+          if (pred->index < splitPoint) {
+            count++;
+          }
         }
       }
     }
-
-    return crossingEdges;
+    return count;
   }
 
- public:
-  size_t getNodeCount() const { return nodes.size(); }
+  int size() const { return nodes.size(); }
+
   DAGNode *getNode(int index) const {
-    return index < nodes.size() ? nodes[index].get() : nullptr;
+    return (index >= 0 && index < static_cast<int>(nodes.size()))
+               ? nodes[index].get()
+               : nullptr;
   }
 };
 
@@ -197,101 +236,50 @@ struct FHEFunctionOutlining
       return;
     }
 
-    // Analyze the function DAG
+    // Analyze the function to build DAG
     SimpleDAGAnalyzer analyzer;
     analyzer.analyze(funcOp);
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "Function " << funcOp.getName() << " has "
-               << analyzer.getNodeCount() << " relevant operations\n");
-
-    if (analyzer.getNodeCount() < static_cast<size_t>(splitCount) * 2) {
+    if (analyzer.size() < splitCount) {
       LLVM_DEBUG(llvm::dbgs()
-                 << "Function too small to split (" << analyzer.getNodeCount()
-                 << " nodes, need at least " << splitCount * 2 << ")\n");
+                 << "Function has too few operations (" << analyzer.size()
+                 << ") for splitting into " << splitCount << " parts\n");
       return;
     }
 
     // Find split points
     auto splitPoints = analyzer.findSplitPoints(splitCount);
     if (splitPoints.empty()) {
-      LLVM_DEBUG(llvm::dbgs() << "No good split points found\n");
+      LLVM_DEBUG(llvm::dbgs() << "No valid split points found\n");
       return;
     }
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "Found " << splitPoints.size() << " split points: ");
-    for (size_t i = 0; i < splitPoints.size(); i++) {
-      LLVM_DEBUG(llvm::dbgs() << splitPoints[i] << " ");
-    }
-    LLVM_DEBUG(llvm::dbgs() << "\n");
-
-    // Perform the outlining
-    performOutlining(funcOp, analyzer, splitPoints);
-  }
-
- private:
-  void performOutlining(func::FuncOp originalFunc, SimpleDAGAnalyzer &analyzer,
-                        const std::vector<int> &splitPoints) {
-    auto module = originalFunc->getParentOfType<ModuleOp>();
-    OpBuilder builder(module.getContext());
-    builder.setInsertionPointAfter(originalFunc);
-
-    std::string baseName = originalFunc.getName().str();
-
-    // Create segments based on split points
-    std::vector<std::pair<int, int>> segments;  // (start, end) pairs
+    // Create segments
+    std::vector<std::pair<int, int>> segments;
     int start = 0;
     for (int splitPoint : splitPoints) {
-      segments.push_back({start, splitPoint});
+      segments.emplace_back(start, splitPoint);
       start = splitPoint;
     }
-    segments.push_back({start, (int)analyzer.getNodeCount()});  // Last segment
+    segments.emplace_back(start, analyzer.size());  // Last segment
 
-    // Store created functions for the main dispatcher
+    LLVM_DEBUG(llvm::dbgs() << "Created " << segments.size() << " segments\n");
+
+    // Get function types for segments with proper type propagation
+    std::vector<Type> segmentInputTypes, segmentOutputTypes;
+    segmentInputTypes = determineSegmentInputTypes(funcOp, analyzer, segments);
+    segmentOutputTypes = determineSegmentOutputTypes(funcOp, analyzer, segments,
+                                                     segmentInputTypes);
+
+    // Create outlined functions
+    OpBuilder builder(&getContext());
+    std::string baseName = funcOp.getName().str();
     std::vector<func::FuncOp> segmentFunctions;
 
-    // First pass: determine the actual types that flow between segments
-    std::vector<Type> segmentInputTypes;
-    std::vector<Type> segmentOutputTypes;
-
-    for (size_t i = 0; i < segments.size(); i++) {
-      int startIdx = segments[i].first;
-      int endIdx = segments[i].second;
-
-      // Input type
-      if (i == 0) {
-        // First segment uses original function input
-        segmentInputTypes.push_back(originalFunc.getFunctionType().getInput(0));
-      } else {
-        // Use the output type of the previous segment
-        segmentInputTypes.push_back(segmentOutputTypes.back());
-      }
-
-      // Output type: find the actual output of the last operation in this
-      // segment
-      Type outputType =
-          originalFunc.getFunctionType().getResult(0);  // Default fallback
-      for (int j = endIdx - 1; j >= startIdx; j--) {
-        if (auto node = analyzer.getNode(j)) {
-          if (!node->op->getResults().empty()) {
-            outputType = node->op->getResult(0).getType();
-            break;
-          }
-        }
-      }
-      segmentOutputTypes.push_back(outputType);
-
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Segment " << i << " types: " << segmentInputTypes[i]
-                 << " -> " << outputType << "\n");
-    }
-
-    // Second pass: create segment functions with correct types
     for (size_t i = 0; i < segments.size(); i++) {
       auto segmentFunc = createSegmentFunctionWithTypes(
-          builder, originalFunc, analyzer, segments[i], static_cast<int>(i),
-          baseName, segmentInputTypes[i], segmentOutputTypes[i]);
+          builder, funcOp, analyzer, segments[i], static_cast<int>(i), baseName,
+          segmentInputTypes[i], segmentOutputTypes[i]);
       if (segmentFunc) {
         segmentFunctions.push_back(segmentFunc);
         LLVM_DEBUG(llvm::dbgs() << "Created segment function: "
@@ -301,11 +289,76 @@ struct FHEFunctionOutlining
 
     // Only create main dispatcher if we successfully created segment functions
     if (!segmentFunctions.empty()) {
-      createMainFunction(builder, originalFunc, segmentFunctions, baseName);
+      createMainFunction(builder, funcOp, segmentFunctions, baseName);
 
-      // Rename the original function to avoid conflicts
-      originalFunc.setName(baseName + "_original");
+      // Instead of clearing the function body (which causes MLIR validation
+      // issues), just rename it to indicate it's the old version. A later
+      // cleanup pass can remove it entirely if needed.
+      funcOp.setPrivate();
+      funcOp.setName(baseName + "_original");
     }
+  }
+
+  std::vector<Type> determineSegmentInputTypes(
+      func::FuncOp funcOp, SimpleDAGAnalyzer &analyzer,
+      const std::vector<std::pair<int, int>> &segments) {
+    std::vector<Type> inputTypes;
+
+    for (size_t i = 0; i < segments.size(); i++) {
+      Type inputType;
+
+      if (i == 0) {
+        // First segment: input type is the original function's first argument
+        inputType = funcOp.getArgumentTypes()[0];
+      } else {
+        // Later segments: we'll determine this after we know the output types
+        // For now, use a placeholder - we'll fix this in
+        // determineSegmentOutputTypes
+        inputType = funcOp.getArgumentTypes()[0];
+      }
+
+      inputTypes.push_back(inputType);
+    }
+
+    return inputTypes;
+  }
+
+  std::vector<Type> determineSegmentOutputTypes(
+      func::FuncOp funcOp, SimpleDAGAnalyzer &analyzer,
+      const std::vector<std::pair<int, int>> &segments,
+      std::vector<Type> &inputTypes) {
+    std::vector<Type> outputTypes;
+
+    for (size_t i = 0; i < segments.size(); i++) {
+      Type outputType;
+      auto segment = segments[i];
+
+      // Find the last computational operation in this segment and use its
+      // result type
+      for (int j = segment.second - 1; j >= segment.first; j--) {
+        if (auto node = analyzer.getNode(j)) {
+          if (!isa<arith::ConstantOp>(node->op) &&
+              !node->op->getResults().empty()) {
+            outputType = node->op->getResult(0).getType();
+            break;
+          }
+        }
+      }
+
+      // Fallback: use the original function's return type
+      if (!outputType) {
+        outputType = funcOp.getResultTypes()[0];
+      }
+
+      outputTypes.push_back(outputType);
+
+      // Now update the input type of the next segment to match this output type
+      if (i + 1 < segments.size()) {
+        inputTypes[i + 1] = outputType;
+      }
+    }
+
+    return outputTypes;
   }
 
   func::FuncOp createSegmentFunctionWithTypes(OpBuilder &builder,
@@ -324,15 +377,39 @@ struct FHEFunctionOutlining
                << "Creating segment " << segmentIndex << " with operations "
                << startIdx << " to " << endIdx << "\n");
 
-    // Get operations to clone in this segment
-    std::vector<Operation *> opsToClone;
-    for (int i = startIdx; i < endIdx; i++) {
-      if (auto node = analyzer.getNode(i)) {
-        opsToClone.push_back(node->op);
-      }
-    }
+    // Get all operations for this segment in their original order
+    std::vector<Operation *> allOpsToClone;
 
-    if (opsToClone.empty()) {
+    // Walk the original function in order and collect operations that belong to
+    // this segment
+    auto segmentConstants = analyzer.getSegmentConstants(startIdx, endIdx);
+
+    originalFunc.walk<WalkOrder::PreOrder>([&](Operation *op) {
+      // Skip the function operation itself
+      if (op == originalFunc.getOperation()) {
+        return WalkResult::advance();
+      }
+
+      // Check if this is a constant needed by this segment
+      if (isa<arith::ConstantOp>(op) && segmentConstants.contains(op)) {
+        allOpsToClone.push_back(op);
+        return WalkResult::advance();
+      }
+
+      // Check if this is a computational operation in this segment
+      for (int i = startIdx; i < endIdx; i++) {
+        if (auto node = analyzer.getNode(i)) {
+          if (node->op == op && !isa<arith::ConstantOp>(op)) {
+            allOpsToClone.push_back(op);
+            break;
+          }
+        }
+      }
+
+      return WalkResult::advance();
+    });
+
+    if (allOpsToClone.empty()) {
       LLVM_DEBUG(llvm::dbgs() << "No operations to clone in segment "
                               << segmentIndex << "\n");
       return nullptr;
@@ -375,17 +452,15 @@ struct FHEFunctionOutlining
       // operand we encounter that comes from outside our segment to our
       // function argument.
       bool foundMapping = false;
-      for (Operation *op : opsToClone) {
+      for (Operation *op : allOpsToClone) {
         for (Value operand : op->getOperands()) {
           if (auto defOp = operand.getDefiningOp()) {
             // Check if this operand is defined before our segment starts
-            bool isFromPreviousSegment = false;
-            for (int j = 0; j < startIdx; j++) {
-              if (auto prevNode = analyzer.getNode(j)) {
-                if (prevNode->op == defOp) {
-                  isFromPreviousSegment = true;
-                  break;
-                }
+            bool isFromPreviousSegment = true;
+            for (Operation *segmentOp : allOpsToClone) {
+              if (segmentOp == defOp) {
+                isFromPreviousSegment = false;
+                break;
               }
             }
             if (isFromPreviousSegment) {
@@ -399,15 +474,25 @@ struct FHEFunctionOutlining
       }
     }
 
-    // Clone operations in the segment
-    for (Operation *op : opsToClone) {
+    // Clone operations in original order
+    for (Operation *op : allOpsToClone) {
       // Handle operands that come from outside this segment
       for (auto operand : op->getOperands()) {
         if (auto defOp = operand.getDefiningOp()) {
           if (valueMap.lookupOrNull(operand) == nullptr) {
             // If this operand is defined outside our segment, map it to
-            // function argument
-            valueMap.map(operand, inputValue);
+            // function argument (we don't need to check segmentConstants here
+            // since we're processing in order)
+            bool isFromPreviousSegment = true;
+            for (Operation *segmentOp : allOpsToClone) {
+              if (segmentOp == defOp) {
+                isFromPreviousSegment = false;
+                break;
+              }
+            }
+            if (isFromPreviousSegment) {
+              valueMap.map(operand, inputValue);
+            }
           }
         }
       }
@@ -420,16 +505,20 @@ struct FHEFunctionOutlining
            llvm::zip(op->getResults(), clonedOp->getResults())) {
         valueMap.map(origResult, newResult);
       }
+
+      if (isa<arith::ConstantOp>(op)) {
+        LLVM_DEBUG(llvm::dbgs() << "Cloned constant operation in segment "
+                                << segmentIndex << "\n");
+      }
     }
 
-    // Create return statement with the last computed value
+    // Find the actual output value (should be the last computational operation
+    // that produces our output type)
     Value returnValue = inputValue;  // Default fallback
 
-    // Find the actual output value (should be the last operation that produces
-    // our output type)
-    for (auto it = opsToClone.rbegin(); it != opsToClone.rend(); ++it) {
+    for (auto it = allOpsToClone.rbegin(); it != allOpsToClone.rend(); ++it) {
       Operation *op = *it;
-      if (!op->getResults().empty()) {
+      if (!isa<arith::ConstantOp>(op) && !op->getResults().empty()) {
         Value lastResult = op->getResult(0);
         Value mappedResult = valueMap.lookupOrNull(lastResult);
         if (mappedResult && mappedResult.getType() == outputType) {
@@ -446,7 +535,8 @@ struct FHEFunctionOutlining
 
     LLVM_DEBUG(llvm::dbgs() << "Successfully created segment function: "
                             << segmentName << " with input type: " << inputType
-                            << " and output type: " << outputType << "\n");
+                            << " and output type: " << outputType << " and "
+                            << segmentConstants.size() << " constants\n");
     return segmentFunc;
   }
 
@@ -459,10 +549,11 @@ struct FHEFunctionOutlining
     // Set insertion point to module level
     builder.setInsertionPointAfter(originalFunc);
 
-    // Create main dispatcher function
-    std::string mainName = baseName + "_main";
-    auto mainFunc = builder.create<func::FuncOp>(
-        originalFunc.getLoc(), mainName, originalFunc.getFunctionType());
+    // Create main function with the same signature as original
+    std::string mainFuncName = baseName + "_main";
+    auto mainFuncType = originalFunc.getFunctionType();
+    auto mainFunc = builder.create<func::FuncOp>(originalFunc.getLoc(),
+                                                 mainFuncName, mainFuncType);
 
     // Create function body
     Block *mainBody = mainFunc.addEntryBlock();
@@ -472,24 +563,27 @@ struct FHEFunctionOutlining
     Value currentValue = mainFunc.getArgument(0);
 
     for (auto segmentFunc : segmentFunctions) {
-      // Create call to segment function
+      // Call the segment function
       auto callOp = builder.create<func::CallOp>(
-          originalFunc.getLoc(), segmentFunc.getFunctionType().getResults(),
-          segmentFunc.getName(), ValueRange{currentValue});
-
+          originalFunc.getLoc(), segmentFunc.getName(),
+          segmentFunc.getResultTypes(), ValueRange{currentValue});
       currentValue = callOp.getResult(0);
     }
 
-    // Return final result
+    // Return the final result
     builder.create<func::ReturnOp>(originalFunc.getLoc(), currentValue);
 
     // Restore insertion point
     builder.restoreInsertionPoint(savedInsertionPoint);
 
     LLVM_DEBUG(llvm::dbgs()
-               << "Created main dispatcher function: " << mainName << "\n");
+               << "Created main dispatcher function: " << mainFuncName << "\n");
   }
 };
+
+std::unique_ptr<Pass> createFHEFunctionOutliningPass() {
+  return std::make_unique<FHEFunctionOutlining>();
+}
 
 }  // namespace heir
 }  // namespace mlir
