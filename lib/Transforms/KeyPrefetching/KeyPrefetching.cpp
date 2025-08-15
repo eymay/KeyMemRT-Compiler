@@ -96,69 +96,6 @@ struct KeyPrefetching : impl::KeyPrefetchingBase<KeyPrefetching> {
   }
 
  private:
-  // Global enqueue mode: Create all enqueues at the top of the program
-  void createGlobalEnqueues(Operation* funcOp, MLIRContext* ctx) {
-    // Collect all deserialize operations in program order
-    SmallVector<openfhe::DeserializeKeyOp> deserializeOps;
-    funcOp->walk([&](openfhe::DeserializeKeyOp deserOp) {
-      deserializeOps.push_back(deserOp);
-    });
-
-    LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Found " << deserializeOps.size()
-                            << " deserialize operations for global enqueue\n");
-
-    if (deserializeOps.empty()) {
-      return;
-    }
-
-    // Find the insertion point at the top of the program
-    Operation* insertionPoint = findTopOfProgram(funcOp);
-    if (!insertionPoint) {
-      LLVM_DEBUG(
-          llvm::dbgs()
-          << "KeyPrefetching: Could not find top of program insertion point\n");
-      return;
-    }
-
-    // Create enqueues in the EXACT same order as deserializes appear in the
-    // program NO deduplication - if there are 3 deserializes for key 13, create
-    // 3 enqueues for key 13
-    OpBuilder builder(insertionPoint);
-    unsigned enqueueCount = 0;
-
-    for (auto deserOp : deserializeOps) {
-      auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index");
-      if (!indexAttr) {
-        LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Skipping deserialize "
-                                   "without index attribute\n");
-        continue;
-      }
-
-      int64_t rotIndex = indexAttr.getInt();
-      unsigned depth = getDeserializeDepth(deserOp);
-
-      // Create global enqueue at the top - ALWAYS, even if duplicate
-      auto cryptoContext = deserOp.getCryptoContext();
-      auto depthAttr = deserOp->getAttrOfType<IntegerAttr>("key_depth");
-      if (!depthAttr) {
-        depthAttr = deserOp->getAttrOfType<IntegerAttr>("depth");
-      }
-
-      builder.create<openfhe::EnqueueKeyOp>(deserOp.getLoc(), cryptoContext,
-                                            indexAttr, depthAttr);
-
-      enqueueCount++;
-      LLVM_DEBUG(llvm::dbgs()
-                 << "KeyPrefetching: Created global enqueue #" << enqueueCount
-                 << " for key (" << rotIndex << "," << depth << ")\n");
-    }
-
-    LLVM_DEBUG(
-        llvm::dbgs()
-        << "KeyPrefetching: Created " << enqueueCount
-        << " global enqueues at top of program (including duplicates)\n");
-  }
-
   // Find the top of the program for global enqueue insertion
   Operation* findTopOfProgram(Operation* funcOp) {
     // Look for the first "real" operation after crypto context setup
@@ -343,23 +280,6 @@ struct KeyPrefetching : impl::KeyPrefetchingBase<KeyPrefetching> {
     return targetPos;
   }
 
-  // Infer rotation index from clear operation (simplified)
-  int32_t inferRotationIndexFromClear(openfhe::ClearKeyOp clearOp) {
-    // Look backwards for recent deserialize operation to infer the key
-    Operation* current = clearOp.getOperation();
-    for (int i = 0; i < 5 && current; i++) {
-      current = current->getPrevNode();
-      if (!current) break;
-
-      if (auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(current)) {
-        if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
-          return indexAttr.getInt();
-        }
-      }
-    }
-    return -1;  // Could not infer
-  }
-
   // Create simple enqueue at standard threshold distance
   void createSimpleEnqueue(openfhe::DeserializeKeyOp deserOp,
                            MLIRContext* ctx) {
@@ -468,6 +388,229 @@ struct KeyPrefetching : impl::KeyPrefetchingBase<KeyPrefetching> {
       }
     }
     return false;
+  }
+
+  void createGlobalEnqueues(Operation* funcOp, MLIRContext* ctx) {
+    // First collect all clear operations in program order
+    SmallVector<openfhe::ClearKeyOp> clearOps;
+    funcOp->walk(
+        [&](openfhe::ClearKeyOp clearOp) { clearOps.push_back(clearOp); });
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "KeyPrefetching: Found " << clearOps.size()
+               << " clear operations for global enqueue ordering\n");
+
+    if (clearOps.empty()) {
+      LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: No clear operations found, "
+                                 "falling back to deserialize order\n");
+      // Fallback to original deserialize-based ordering if no clears found
+      createGlobalEnqueuesFromDeserializes(funcOp, ctx);
+      return;
+    }
+
+    // Find the insertion point at the top of the program
+    Operation* insertionPoint = findTopOfProgram(funcOp);
+    if (!insertionPoint) {
+      LLVM_DEBUG(
+          llvm::dbgs()
+          << "KeyPrefetching: Could not find top of program insertion point\n");
+      return;
+    }
+
+    OpBuilder builder(insertionPoint);
+    unsigned enqueueCount = 0;
+
+    // For each clear operation, find the corresponding deserialize and create
+    // enqueue
+    for (auto clearOp : clearOps) {
+      // Get the rotation index from the clear operation
+      int64_t rotIndex = inferRotationIndexFromClear(clearOp);
+      if (rotIndex == -1) {
+        LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Could not infer rotation "
+                                   "index from clear operation\n");
+        continue;
+      }
+
+      // Find the corresponding deserialize operation for this clear
+      openfhe::DeserializeKeyOp correspondingDeserialize =
+          findDeserializeForClear(clearOp, rotIndex);
+
+      if (!correspondingDeserialize) {
+        LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Could not find deserialize "
+                                   "for clear with rotation index "
+                                << rotIndex << "\n");
+        continue;
+      }
+
+      // Extract attributes from the deserialize operation
+      auto indexAttr =
+          correspondingDeserialize->getAttrOfType<IntegerAttr>("index");
+      if (!indexAttr) {
+        LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Deserialize operation "
+                                   "missing index attribute\n");
+        continue;
+      }
+
+      unsigned depth = getDeserializeDepth(correspondingDeserialize);
+      auto cryptoContext = correspondingDeserialize.getCryptoContext();
+      auto depthAttr =
+          correspondingDeserialize->getAttrOfType<IntegerAttr>("key_depth");
+      if (!depthAttr) {
+        depthAttr =
+            correspondingDeserialize->getAttrOfType<IntegerAttr>("depth");
+      }
+
+      // Create enqueue based on clear operation order
+      builder.create<openfhe::EnqueueKeyOp>(correspondingDeserialize.getLoc(),
+                                            cryptoContext, indexAttr,
+                                            depthAttr);
+
+      enqueueCount++;
+      LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Created global enqueue #"
+                              << enqueueCount << " for key (" << rotIndex << ","
+                              << depth << ") based on clear operation order\n");
+    }
+
+    LLVM_DEBUG(
+        llvm::dbgs()
+        << "KeyPrefetching: Created " << enqueueCount
+        << " global enqueues at top of program ordered by clear operations\n");
+  }
+
+  // Helper function: Find deserialize operation corresponding to a clear
+  // operation
+  openfhe::DeserializeKeyOp findDeserializeForClear(openfhe::ClearKeyOp clearOp,
+                                                    int64_t rotIndex) {
+    // Look for deserialize operation with matching rotation index
+    // First try looking backwards from the clear operation
+    Operation* current = clearOp.getOperation();
+    for (int i = 0; i < 50 && current; i++) {
+      current = current->getPrevNode();
+      if (!current) break;
+
+      if (auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(current)) {
+        if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+          if (indexAttr.getInt() == rotIndex) {
+            return deserOp;
+          }
+        }
+      }
+    }
+
+    // If not found backwards, search the entire function
+    openfhe::DeserializeKeyOp result = nullptr;
+    clearOp->getParentOp()->walk([&](openfhe::DeserializeKeyOp deserOp) {
+      if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+        if (indexAttr.getInt() == rotIndex) {
+          result = deserOp;
+          return WalkResult::interrupt();
+        }
+      }
+      return WalkResult::advance();
+    });
+
+    return result;
+  }
+
+  // Improved rotation index inference from clear operation
+  int32_t inferRotationIndexFromClear(openfhe::ClearKeyOp clearOp) {
+    // Method 1: Look at the eval_key operand if it comes from a deserialize
+    Value evalKey = clearOp.getEvalKey();
+    if (auto defOp = evalKey.getDefiningOp<openfhe::DeserializeKeyOp>()) {
+      if (auto indexAttr = defOp->getAttrOfType<IntegerAttr>("index")) {
+        return indexAttr.getInt();
+      }
+    }
+
+    // Method 2: Look backwards for recent deserialize operation
+    Operation* current = clearOp.getOperation();
+    for (int i = 0; i < 10 && current; i++) {
+      current = current->getPrevNode();
+      if (!current) break;
+
+      if (auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(current)) {
+        if (auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index")) {
+          return indexAttr.getInt();
+        }
+      }
+    }
+
+    // Method 3: Look for rotation operations that use the same key
+    int32_t foundIndex = -1;
+
+    clearOp->getParentOp()->walk([&](openfhe::RotOp rotOp) {
+      if (rotOp.getEvalKey() == evalKey) {
+        if (auto indexAttr = rotOp->getAttrOfType<IntegerAttr>("index")) {
+          foundIndex = indexAttr.getInt();
+          return WalkResult::interrupt();
+        }
+      }
+      return WalkResult::advance();
+    });
+
+    return foundIndex;
+  }
+
+  // Fallback function: original deserialize-based ordering
+  void createGlobalEnqueuesFromDeserializes(Operation* funcOp,
+                                            MLIRContext* ctx) {
+    // Collect all deserialize operations in program order
+    SmallVector<openfhe::DeserializeKeyOp> deserializeOps;
+    funcOp->walk([&](openfhe::DeserializeKeyOp deserOp) {
+      deserializeOps.push_back(deserOp);
+    });
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "KeyPrefetching: Fallback - Found " << deserializeOps.size()
+               << " deserialize operations for global enqueue\n");
+
+    if (deserializeOps.empty()) {
+      return;
+    }
+
+    // Find the insertion point at the top of the program
+    Operation* insertionPoint = findTopOfProgram(funcOp);
+    if (!insertionPoint) {
+      LLVM_DEBUG(
+          llvm::dbgs()
+          << "KeyPrefetching: Could not find top of program insertion point\n");
+      return;
+    }
+
+    // Create enqueues in the same order as deserializes appear in the program
+    OpBuilder builder(insertionPoint);
+    unsigned enqueueCount = 0;
+
+    for (auto deserOp : deserializeOps) {
+      auto indexAttr = deserOp->getAttrOfType<IntegerAttr>("index");
+      if (!indexAttr) {
+        LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Skipping deserialize "
+                                   "without index attribute\n");
+        continue;
+      }
+
+      int64_t rotIndex = indexAttr.getInt();
+      unsigned depth = getDeserializeDepth(deserOp);
+
+      // Create global enqueue at the top
+      auto cryptoContext = deserOp.getCryptoContext();
+      auto depthAttr = deserOp->getAttrOfType<IntegerAttr>("key_depth");
+      if (!depthAttr) {
+        depthAttr = deserOp->getAttrOfType<IntegerAttr>("depth");
+      }
+
+      builder.create<openfhe::EnqueueKeyOp>(deserOp.getLoc(), cryptoContext,
+                                            indexAttr, depthAttr);
+
+      enqueueCount++;
+      LLVM_DEBUG(llvm::dbgs()
+                 << "KeyPrefetching: Created fallback global enqueue #"
+                 << enqueueCount << " for key (" << rotIndex << "," << depth
+                 << ")\n");
+    }
+
+    LLVM_DEBUG(llvm::dbgs() << "KeyPrefetching: Created " << enqueueCount
+                            << " fallback global enqueues at top of program\n");
   }
 };
 
