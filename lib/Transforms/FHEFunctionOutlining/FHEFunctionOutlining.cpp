@@ -266,10 +266,8 @@ struct FHEFunctionOutlining
     LLVM_DEBUG(llvm::dbgs() << "Created " << segments.size() << " segments\n");
 
     // Get function types for segments with proper type propagation
-    std::vector<Type> segmentInputTypes, segmentOutputTypes;
-    segmentInputTypes = determineSegmentInputTypes(funcOp, analyzer, segments);
-    segmentOutputTypes = determineSegmentOutputTypes(funcOp, analyzer, segments,
-                                                     segmentInputTypes);
+    auto [segmentInputTypes, segmentOutputTypes] =
+        determineSegmentTypes(funcOp, analyzer, segments);
 
     // Create outlined functions
     OpBuilder builder(&getContext());
@@ -323,15 +321,16 @@ struct FHEFunctionOutlining
     return inputTypes;
   }
 
-  std::vector<Type> determineSegmentOutputTypes(
+  std::pair<std::vector<Type>, std::vector<Type>> determineSegmentTypes(
       func::FuncOp funcOp, SimpleDAGAnalyzer &analyzer,
-      const std::vector<std::pair<int, int>> &segments,
-      std::vector<Type> &inputTypes) {
+      const std::vector<std::pair<int, int>> &segments) {
+    std::vector<Type> inputTypes;
     std::vector<Type> outputTypes;
 
+    // First pass: determine all output types
     for (size_t i = 0; i < segments.size(); i++) {
-      Type outputType;
       auto segment = segments[i];
+      Type outputType;
 
       // Find the last computational operation in this segment and use its
       // result type
@@ -340,6 +339,10 @@ struct FHEFunctionOutlining
           if (!isa<arith::ConstantOp>(node->op) &&
               !node->op->getResults().empty()) {
             outputType = node->op->getResult(0).getType();
+            llvm::dbgs() << "  Found last operation at index " << j << ": "
+                         << *node->op << "\n";
+            llvm::dbgs() << "  Operation result type: " << outputType << "\n";
+
             break;
           }
         }
@@ -351,14 +354,24 @@ struct FHEFunctionOutlining
       }
 
       outputTypes.push_back(outputType);
-
-      // Now update the input type of the next segment to match this output type
-      if (i + 1 < segments.size()) {
-        inputTypes[i + 1] = outputType;
-      }
     }
 
-    return outputTypes;
+    // Second pass: determine input types based on output types
+    for (size_t i = 0; i < segments.size(); i++) {
+      Type inputType;
+
+      if (i == 0) {
+        // First segment: input type is the original function's first argument
+        inputType = funcOp.getArgumentTypes()[0];
+      } else {
+        // Later segments: input type is the previous segment's output type
+        inputType = outputTypes[i - 1];
+      }
+
+      inputTypes.push_back(inputType);
+    }
+
+    return std::make_pair(inputTypes, outputTypes);
   }
 
   func::FuncOp createSegmentFunctionWithTypes(OpBuilder &builder,
