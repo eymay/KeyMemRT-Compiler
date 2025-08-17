@@ -394,6 +394,29 @@ def EnqueueKeyOp : Openfhe_Op<"enqueue_key"> {
   let results = (outs);
 }
 
+def EnqueueKeyDynamicOp : Openfhe_Op<"enqueue_key_dynamic"> {
+  let summary = "Enqueue a key for prefetching";
+  let description = [{
+    Provides a hint to the runtime about when a key will be needed for prefetching.
+    This operation corresponds exactly to a deserialize_key operation and uses the
+    same index and optional depth attributes.
+
+    Example:
+    ```mlir
+    openfhe.enqueue_key %cc, 5 : !openfhe.crypto_context, index
+    openfhe.enqueue_key %cc, 3 {depth = 2 : i64} : !openfhe.crypto_context, index
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    I32:$index,
+    OptionalAttr<Builtin_IntegerAttr>:$depth
+  );
+  
+  let results = (outs);
+}
+
 def SerializeKeyOp : Openfhe_Op<"serialize_key"> {
   let summary = "Serialize a rotation key for a given rotation index";
   let description = [{
