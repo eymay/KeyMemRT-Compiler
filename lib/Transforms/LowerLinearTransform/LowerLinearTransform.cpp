@@ -1,4 +1,11 @@
-//===- DataflowLinearTransformLowering.cpp - Complete dataflow solution -===//
+//===- LowerLinearTransform.cpp - Memory-Optimized Linear Transform ----===//
+//
+// Implementation of memory-optimized linear transform lowering pass.
+// This version uses accumulative addition pattern to minimize memory usage
+// by immediately adding each diagonal result instead of storing all results
+// and then accumulating them in a separate phase.
+//
+//===----------------------------------------------------------------------===//
 
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 
@@ -27,6 +34,9 @@ static constexpr StringRef kLinearTransformStartAttr =
 static constexpr StringRef kLinearTransformEndAttr =
     "heir.linear_transform_end";
 
+// Counter for unique linear transform region IDs
+static std::atomic<int64_t> currentId{0};
+
 // Helper to extract scaling factor from types
 static int64_t getScalingFactor(Type type) {
   if (auto ctType = dyn_cast<lwe::NewLWECiphertextType>(type)) {
@@ -42,10 +52,10 @@ static int64_t getScalingFactor(Type type) {
       return encoding.getScalingFactor();
     }
   }
-  return 0;
+  return 1;  // Default scaling factor
 }
 
-// Helper to create type with new scaling factor
+// Helper to create type with specific scaling factor
 static Type createTypeWithScalingFactor(Type originalType, int64_t newScale,
                                         MLIRContext *context) {
   if (auto ctType = dyn_cast<lwe::NewLWECiphertextType>(originalType)) {
@@ -58,30 +68,26 @@ static Type createTypeWithScalingFactor(Type originalType, int64_t newScale,
         context, ctType.getApplicationData(), newPtSpace,
         ctType.getCiphertextSpace(), ctType.getKey(), ctType.getModulusChain());
   }
-  return originalType;
+  return originalType;  // Return original if not convertible
 }
 
-class LinearTransformLoweringPattern
+// Pattern for lowering linear transform operations
+struct LinearTransformLoweringPattern
     : public OpRewritePattern<ckks::LinearTransformOp> {
- public:
   using OpRewritePattern<ckks::LinearTransformOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ckks::LinearTransformOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-
-    // Extract attributes
-    int32_t diagonalCount = op.getDiagonalCount();
-    int32_t slots = op.getSlots();
-
-    // Get operands and expected result type
     Value inputCiphertext = op.getInput();
     Value weightsPlaintext = op.getWeights();
     Type expectedResultType = op.getResult().getType();
 
-    static int transformId = 0;
-    int currentId = transformId++;
-    // Extract scaling factors
+    // Extract operation attributes
+    int32_t diagonalCount = op.getDiagonalCount();
+    int32_t slots = op.getSlots();
+
+    // Get scaling factors for type management
     int64_t inputScale = getScalingFactor(inputCiphertext.getType());
     int64_t weightsScale = getScalingFactor(weightsPlaintext.getType());
     int64_t expectedResultScale = getScalingFactor(expectedResultType);
@@ -92,17 +98,29 @@ class LinearTransformLoweringPattern
                  << ", weights scale: " << weightsScale
                  << ", expected result scale: " << expectedResultScale << "\n";
 
-    // Create operations for each diagonal
-    SmallVector<Value> diagonalResults;
+    // Generate unique region ID for outlining markers
+    int64_t regionId = currentId.fetch_add(1);
     Operation *firstOp = nullptr;
+    Operation *lastOp = nullptr;
+
+    // MEMORY-OPTIMIZED ACCUMULATIVE PATTERN:
+    // Instead of creating all multiplications first and then accumulating,
+    // we immediately accumulate each diagonal result as we create it.
+    // Pattern: rot → mul_plain → add (accumulate with previous)
+
+    Value accumulator = nullptr;
 
     for (int32_t i = 0; i < diagonalCount; ++i) {
-      // Step 1: Apply rotation if needed
+      llvm::dbgs() << "Processing diagonal " << i << "\n";
+
+      // Step 1: Apply rotation if needed (no rotation for diagonal 0)
       Value rotatedInput = inputCiphertext;
       if (i > 0) {
         rotatedInput = rewriter.create<ckks::RotateOp>(
             loc, inputCiphertext.getType(), inputCiphertext,
             rewriter.getI32IntegerAttr(i));
+
+        llvm::dbgs() << "  Created rotation for offset " << i << "\n";
       }
 
       // Step 2: Extract diagonal with proper scaling
@@ -116,23 +134,46 @@ class LinearTransformLoweringPattern
 
       Value mulResult = rewriter.create<ckks::MulPlainOp>(
           loc, mulResultType, rotatedInput, diagonal);
+
+      llvm::dbgs() << "  Created multiplication with scale " << mulResultScale
+                   << "\n";
+
+      // Mark the first operation for outlining
       if (!firstOp) {
         Operation *startOp =
             (i == 0) ? diagonal.getDefiningOp() : rotatedInput.getDefiningOp();
         startOp->setAttr(kLinearTransformStartAttr,
-                         rewriter.getI64IntegerAttr(currentId));
+                         rewriter.getI64IntegerAttr(regionId));
         firstOp = startOp;
+        llvm::dbgs() << "  Marked start of linear transform region " << regionId
+                     << "\n";
       }
 
-      diagonalResults.push_back(mulResult);
+      // Step 4: MEMORY-EFFICIENT ACCUMULATION
+      // Immediately accumulate this result instead of storing it
+      if (accumulator == nullptr) {
+        // First diagonal becomes the initial accumulator
+        accumulator = mulResult;
+        llvm::dbgs() << "  Initialized accumulator with first diagonal\n";
+      } else {
+        // Add this diagonal result to the accumulator immediately
+        // This frees the previous mulResult from memory
+        Type addResultType = createTypeWithScalingFactor(
+            accumulator.getType(), mulResultScale, rewriter.getContext());
+
+        accumulator = rewriter.create<ckks::AddOp>(loc, addResultType,
+                                                   accumulator, mulResult);
+
+        llvm::dbgs() << "  Accumulated diagonal " << i << " into running sum\n";
+      }
+
+      // Keep track of the last operation for outlining
+      lastOp = accumulator.getDefiningOp();
     }
 
-    // Step 4: Accumulate all results
-    Value accumulated = accumulateResults(rewriter, loc, diagonalResults);
-
     // Step 5: Handle scaling factor conversion if needed
-    Value finalResult = accumulated;
-    int64_t actualResultScale = getScalingFactor(accumulated.getType());
+    Value finalResult = accumulator;
+    int64_t actualResultScale = getScalingFactor(accumulator.getType());
 
     if (actualResultScale != expectedResultScale) {
       llvm::dbgs() << "Scale mismatch: actual=" << actualResultScale
@@ -141,17 +182,22 @@ class LinearTransformLoweringPattern
 
       // For now, we'll use the accumulated result as-is
       // This preserves the actual scaling behavior of the operations
-      finalResult = accumulated;
+      finalResult = accumulator;
     }
-    if (finalResult) {
-      finalResult.getDefiningOp()->setAttr(
-          kLinearTransformEndAttr, rewriter.getI64IntegerAttr(currentId));
+
+    // Mark the end of the linear transform region
+    if (lastOp) {
+      lastOp->setAttr(kLinearTransformEndAttr,
+                      rewriter.getI64IntegerAttr(regionId));
+      llvm::dbgs() << "  Marked end of linear transform region " << regionId
+                   << "\n";
     }
 
     // Replace the operation
     rewriter.replaceOp(op, finalResult);
 
-    llvm::dbgs() << "Successfully lowered linear_transform\n";
+    llvm::dbgs() << "Successfully lowered linear_transform with "
+                    "memory-optimized pattern\n";
     return success();
   }
 
@@ -177,47 +223,31 @@ class LinearTransformLoweringPattern
     auto encoding = lwe::InverseCanonicalEncodingAttr::get(
         rewriter.getContext(), targetScale);
 
-    // Create polynomial
-    auto ringDegree = slots * 2;
-    SmallVector<polynomial::IntMonomial> monomials;
-    monomials.push_back(polynomial::IntMonomial(1, 0));
-    monomials.push_back(polynomial::IntMonomial(1, ringDegree));
-    polynomial::IntPolynomial poly(monomials);
+    // Create dummy ring for plaintext space (using i32 coefficient type)
+    auto coeffType = rewriter.getI32Type();
+    auto dummyPoly = polynomial::IntPolynomialAttr::get(
+        rewriter.getContext(),
+        polynomial::IntPolynomial::fromCoefficients({1}));
+    auto ring = polynomial::RingAttr::get(coeffType, dummyPoly);
 
-    auto polyAttr =
-        polynomial::IntPolynomialAttr::get(rewriter.getContext(), poly);
-    auto ring =
-        polynomial::RingAttr::get(rewriter.getContext(), slotType, polyAttr);
+    // Create plaintext space
+    auto ptSpace =
+        lwe::PlaintextSpaceAttr::get(rewriter.getContext(), ring, encoding);
 
     // Create plaintext type with proper overflow handling
     auto noOverflowAttr = lwe::NoOverflowAttr::get(rewriter.getContext());
     auto appData = lwe::ApplicationDataAttr::get(tensorType, noOverflowAttr);
-    auto ptSpace =
-        lwe::PlaintextSpaceAttr::get(rewriter.getContext(), ring, encoding);
     auto ptType =
         lwe::NewLWEPlaintextType::get(rewriter.getContext(), appData, ptSpace);
 
-    return rewriter.create<lwe::RLWEEncodeOp>(loc, ptType, diagonalConst,
-                                              encoding, ring);
-  }
+    // Encode the diagonal using RLWEEncodeOp for NewLWEPlaintextType
+    Value encodedDiagonal = rewriter.create<lwe::RLWEEncodeOp>(
+        loc, ptType, diagonalConst, encoding, ring);
 
-  Value accumulateResults(PatternRewriter &rewriter, Location loc,
-                          ArrayRef<Value> results) const {
-    if (results.empty()) {
-      return Value();
-    }
+    llvm::dbgs() << "  Extracted diagonal " << diagonalIdx << " with scale "
+                 << targetScale << "\n";
 
-    if (results.size() == 1) {
-      return results[0];
-    }
-
-    Value accumulator = results[0];
-    for (size_t i = 1; i < results.size(); ++i) {
-      accumulator = rewriter.create<ckks::AddOp>(loc, accumulator.getType(),
-                                                 accumulator, results[i]);
-    }
-
-    return accumulator;
+    return encodedDiagonal;
   }
 };
 
@@ -226,13 +256,17 @@ class LinearTransformLoweringPattern
 
 struct LowerLinearTransform
     : impl::LowerLinearTransformBase<LowerLinearTransform> {
-  using LowerLinearTransformBase::LowerLinearTransformBase;
+  using impl::LowerLinearTransformBase<
+      LowerLinearTransform>::LowerLinearTransformBase;
 
   void runOnOperation() override {
-    func::FuncOp func = getOperation();
     MLIRContext *context = &getContext();
+    auto func = getOperation();
 
-    // Step 1: Lower linear transform operations
+    llvm::dbgs() << "=== LowerLinearTransform::runOnOperation() "
+                    "MEMORY-OPTIMIZED VERSION ===\n";
+
+    // Step 1: Apply the memory-optimized lowering pattern
     RewritePatternSet patterns(context);
     patterns.add<LinearTransformLoweringPattern>(context);
 
@@ -241,7 +275,7 @@ struct LowerLinearTransform
       return;
     }
 
-    llvm::dbgs() << "Linear transform lowering completed\n";
+    llvm::dbgs() << "Memory-optimized linear transform lowering completed\n";
 
     // Step 2: Propagate type changes through the program
     bool madeChanges = true;
@@ -291,52 +325,33 @@ struct LowerLinearTransform
           }
         }
 
-        // Update add_plain operations
+        // Update mul_plain operations for type consistency
+        else if (auto mulOp = dyn_cast<ckks::MulPlainOp>(op)) {
+          Type ctType = mulOp.getLhs().getType();
+          Type ptType = mulOp.getRhs().getType();
+          Type resultType = mulOp.getResult().getType();
 
-        else if (auto addPlainOp = dyn_cast<ckks::AddPlainOp>(op)) {
-          Value ciphertext, plaintext;
-          if (isa<lwe::NewLWECiphertextType>(addPlainOp.getLhs().getType())) {
-            ciphertext = addPlainOp.getLhs();
-            plaintext = addPlainOp.getRhs();
-          } else {
-            ciphertext = addPlainOp.getRhs();
-            plaintext = addPlainOp.getLhs();
-          }
+          int64_t ctScale = getScalingFactor(ctType);
+          int64_t ptScale = getScalingFactor(ptType);
+          int64_t resultScale = getScalingFactor(resultType);
+          int64_t expectedScale = ctScale + ptScale;
 
-          int64_t ctScale = getScalingFactor(ciphertext.getType());
-          int64_t ptScale = getScalingFactor(plaintext.getType());
-          int64_t resultScale =
-              getScalingFactor(addPlainOp.getResult().getType());
-
-          // For add_plain, both operands must have the same scaling factor
-          if (ctScale != ptScale) {
-            llvm::dbgs() << "  Updating plaintext scale for add_plain: "
-                         << ptScale << " -> " << ctScale << "\n";
-
-            // Update the plaintext operand's type to match ciphertext scale
-            Type newPtType = createTypeWithScalingFactor(plaintext.getType(),
-                                                         ctScale, context);
-            plaintext.setType(cast<lwe::NewLWEPlaintextType>(newPtType));
-            madeChanges = true;
-          }
-
-          // Update result type to match ciphertext scale
-          if (resultScale != ctScale) {
-            llvm::dbgs() << "  Updating add_plain result scale: " << resultScale
-                         << " -> " << ctScale << "\n";
-            Type newResultType = createTypeWithScalingFactor(
-                addPlainOp.getResult().getType(), ctScale, context);
-            addPlainOp.getResult().setType(
+          if (resultScale != expectedScale) {
+            llvm::dbgs() << "  Updating mul_plain result scale: " << resultScale
+                         << " -> " << expectedScale << "\n";
+            Type newResultType =
+                createTypeWithScalingFactor(resultType, expectedScale, context);
+            mulOp.getResult().setType(
                 cast<lwe::NewLWECiphertextType>(newResultType));
             madeChanges = true;
           }
         }
-        // Update other operations as needed...
       });
     }
 
     llvm::dbgs() << "Type propagation completed after " << iteration
                  << " iterations\n";
+    llvm::dbgs() << "=== LowerLinearTransform::runOnOperation() COMPLETE ===\n";
   }
 };
 
