@@ -355,6 +355,48 @@ def DeserializeKeyOp : Openfhe_Op<"deserialize_key"> {
   let results = (outs Openfhe_EvalKey:$evalKey);
 }
 
+def DeserializeKeyDynamicOp : Openfhe_Op<"deserialize_key_dynamic"> {
+  let summary = "Deserialize a previously serialized rotation key";
+  let description = [{
+    Takes a serialized evaluation key and deserializes it back into the context.
+    This operation just loads the key from a file into context memory.
+
+    Example:
+    ```mlir
+    openfhe.deserialize_key_dynamic %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    I32:$index
+  );
+  let results = (outs Openfhe_EvalKey:$evalKey);
+}
+
+def EnqueueKeyOp : Openfhe_Op<"enqueue_key"> {
+  let summary = "Enqueue a key for prefetching";
+  let description = [{
+    Provides a hint to the runtime about when a key will be needed for prefetching.
+    This operation corresponds exactly to a deserialize_key operation and uses the
+    same index and optional depth attributes.
+
+    Example:
+    ```mlir
+    openfhe.enqueue_key %cc, 5 : !openfhe.crypto_context, index
+    openfhe.enqueue_key %cc, 3 {depth = 2 : i64} : !openfhe.crypto_context, index
+    ```
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$cryptoContext,
+    Builtin_IntegerAttr:$index,
+    OptionalAttr<Builtin_IntegerAttr>:$depth
+  );
+  
+  let results = (outs);
+}
+
 def SerializeKeyOp : Openfhe_Op<"serialize_key"> {
   let summary = "Serialize a rotation key for a given rotation index";
   let description = [{
@@ -542,6 +584,27 @@ def ClearCtOp : Openfhe_Op<"clear_ct"> {
 
   let arguments = (ins
     NewLWECiphertext:$ciphertext
+  );
+}
+
+def ClearPtOp : Openfhe_Op<"clear_pt"> {
+  let summary = "Clear a plaintext from memory to reduce memory usage";
+  let description = [{
+    Takes a plaintext and clears it from memory by calling reset() on the underlying 
+    shared pointer. This helps manage memory usage by explicitly releasing plaintext 
+    data when it's no longer needed.
+
+    This operation should be inserted at points where the compiler can determine that
+    a plaintext's lifetime has ended and it will not be used again.
+
+    Example:
+    ```mlir
+    openfhe.clear_pt %pt : !lwe.lwe_plaintext
+    ```
+  }];
+
+  let arguments = (ins
+    NewLWEPlaintext:$plaintext
   );
 }
 
