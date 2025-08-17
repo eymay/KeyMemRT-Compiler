@@ -131,23 +131,23 @@ LogicalResult RLWEDecodeOp::verify() {
 // Op type inference.
 //===----------------------------------------------------------------------===//
 
-LogicalResult RAddOp::inferReturnTypes(
-    MLIRContext* ctx, std::optional<Location>, RAddOp::Adaptor adaptor,
-    SmallVectorImpl<Type>& inferredReturnTypes) {
-  return lwe::inferAddOpReturnTypes(ctx, adaptor, inferredReturnTypes);
-}
-
-LogicalResult RSubOp::inferReturnTypes(
-    MLIRContext* ctx, std::optional<Location>, RSubOp::Adaptor adaptor,
-    SmallVectorImpl<Type>& inferredReturnTypes) {
-  return lwe::inferAddOpReturnTypes(ctx, adaptor, inferredReturnTypes);
-}
-
-LogicalResult RMulOp::inferReturnTypes(
-    MLIRContext* ctx, std::optional<Location>, RMulOp::Adaptor adaptor,
-    SmallVectorImpl<Type>& inferredReturnTypes) {
-  return lwe::inferMulOpReturnTypes(ctx, adaptor, inferredReturnTypes);
-}
+// LogicalResult RAddOp::inferReturnTypes(
+//     MLIRContext* ctx, std::optional<Location>, RAddOp::Adaptor adaptor,
+//     SmallVectorImpl<Type>& inferredReturnTypes) {
+//   return lwe::inferAddOpReturnTypes(ctx, adaptor, inferredReturnTypes);
+// }
+//
+// LogicalResult RSubOp::inferReturnTypes(
+//     MLIRContext* ctx, std::optional<Location>, RSubOp::Adaptor adaptor,
+//     SmallVectorImpl<Type>& inferredReturnTypes) {
+//   return lwe::inferAddOpReturnTypes(ctx, adaptor, inferredReturnTypes);
+// }
+//
+// LogicalResult RMulOp::inferReturnTypes(
+//     MLIRContext* ctx, std::optional<Location>, RMulOp::Adaptor adaptor,
+//     SmallVectorImpl<Type>& inferredReturnTypes) {
+//   return lwe::inferMulOpReturnTypes(ctx, adaptor, inferredReturnTypes);
+// }
 
 }  // namespace lwe
 }  // namespace heir

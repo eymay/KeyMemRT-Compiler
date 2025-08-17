@@ -22,11 +22,11 @@ cc_library(
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TransformUtils",
     ],
-    alwayslink = 1,
+    # alwayslink = 1,
 )
 
-add_heir_transforms(
-    header_filename = "BGVToLWE.h.inc",
-    pass_name = "BGVToLWE",
-    td_file = "BGVToLWE.td",
-)
+# add_heir_transforms(
+#     header_filename = "BGVToLWE.h.inc",
+#     pass_name = "BGVToLWE",
+#     td_file = "BGVToLWE.td",
+# )

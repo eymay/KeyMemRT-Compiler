@@ -85,7 +85,9 @@ struct ConvertExtract : public OpRewritePattern<ExtractOp> {
                                     ctTy.getPlaintextSpace().getEncoding(),
                                     ctTy.getPlaintextSpace().getRing())
             .getResult();
-    auto plainMulOp = b.create<MulPlainOp>(op.getInput(), oneHotPlaintext);
+    // auto plainMulOp = b.create<MulPlainOp>(op.getInput(), oneHotPlaintext);
+    auto plainMulOp = b.create<MulPlainOp>(op.getResult().getType(),
+                                           op.getInput(), oneHotPlaintext);
     // inherit dialect attrs to all three new ops
     plainMulOp->setDialectAttrs(op->getDialectAttrs());
     auto plainMul = plainMulOp.getResult();

@@ -9,7 +9,7 @@ include "lib/Dialect/LWE/IR/LWETraits.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonTypeConstraints.td"
 include "mlir/IR/OpBase.td"
-include "mlir/Interfaces/InferTypeOpInterface.td"
+// include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 class Openfhe_Op<string mnemonic, list<Trait> traits = []> :
@@ -166,7 +166,7 @@ def MakePackedPlaintextOp : Openfhe_Op<"make_packed_plaintext", [Pure]> {
     RankedTensorOf<[AnyInteger]>:$value)
   ;
   let results = (outs NewLWEPlaintext:$plaintext);
-  let hasVerifier = 1;
+  // let hasVerifier = 1;
 }
 
 def MakeCKKSPackedPlaintextOp : Openfhe_Op<"make_ckks_packed_plaintext", [Pure]> {
@@ -175,7 +175,7 @@ def MakeCKKSPackedPlaintextOp : Openfhe_Op<"make_ckks_packed_plaintext", [Pure]>
     RankedTensorOf<[AnyFloat, AnyInteger]>:$value)
   ;
   let results = (outs NewLWEPlaintext:$plaintext);
-  let hasVerifier = 1;
+  // let hasVerifier = 1;
 }
 
 def EncryptOp : Openfhe_Op<"encrypt", [Pure]> {
@@ -196,14 +196,11 @@ def DecryptOp : Openfhe_Op<"decrypt", [Pure]> {
   let results = (outs NewLWEPlaintext:$plaintext);
 }
 
-def AddOp : Openfhe_BinaryOp<"add",
-    [SameOperandsAndResultRings,
-    InferTypeOpAdaptor]> {
+def AddOp : Openfhe_BinaryOp<"add"> {
   let summary = "OpenFHE add operation of two ciphertexts.";
 }
 def SubOp : Openfhe_BinaryOp<"sub",
-    [SameOperandsAndResultRings,
-    InferTypeOpAdaptor]> {
+    [SameOperandsAndResultRings]> {
   let summary = "OpenFHE sub operation of two ciphertexts.";
 }
 
@@ -220,8 +217,8 @@ def SubInPlaceOp : Openfhe_BinaryInPlaceOp<"sub_inplace"> {
 
 def AddPlainOp : Openfhe_Op<"add_plain",[
     Pure,
-    AllCiphertextTypesMatch,
-    InferTypeOpAdaptor
+    // AllCiphertextTypesMatch,
+    // InferTypeOpAdaptor
 ]> {
   let summary = "OpenFHE add operation of a ciphertext and a plaintext.";
   let arguments = (ins
@@ -235,7 +232,7 @@ def AddPlainOp : Openfhe_Op<"add_plain",[
 def SubPlainOp : Openfhe_Op<"sub_plain",[
     Pure,
     AllCiphertextTypesMatch,
-    InferTypeOpAdaptor
+    // InferTypeOpAdaptor
 ]> {
   let summary = "OpenFHE sub operation of a ciphertext and a plaintext.";
   let arguments = (ins
@@ -248,7 +245,7 @@ def SubPlainOp : Openfhe_Op<"sub_plain",[
 
 def MulOp : Openfhe_BinaryOp<"mul"> { let summary = "OpenFHE mul operation of two ciphertexts with relinearization."; }
 
-def MulNoRelinOp : Openfhe_Op<"mul_no_relin", [Pure, SameOperandsAndResultRings, InferTypeOpAdaptor]> {
+def MulNoRelinOp : Openfhe_Op<"mul_no_relin", [Pure, SameOperandsAndResultRings]> {
   let summary = "OpenFHE mul operation of two ciphertexts without relinearization.";
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
@@ -256,7 +253,7 @@ def MulNoRelinOp : Openfhe_Op<"mul_no_relin", [Pure, SameOperandsAndResultRings,
     NewLWECiphertext:$rhs
   );
   let results = (outs NewLWECiphertext:$output);
-  let hasVerifier = 1;
+  // let hasVerifier = 1;
 }
 
 def MulPlainOp : Openfhe_Op<"mul_plain",[
