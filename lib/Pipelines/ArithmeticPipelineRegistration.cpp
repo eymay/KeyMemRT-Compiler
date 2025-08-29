@@ -356,11 +356,15 @@ BackendPipelineBuilder toOpenFhePipelineBuilder() {
 
     // TODO (#1145): OpenFHE context configuration should NOT do its own
     // analysis but instead use information put into the IR by previous passes
-    // auto configureCryptoContextOptions =
-    //     openfhe::ConfigureCryptoContextOptions{};
-    // configureCryptoContextOptions.entryFunction = options.entryFunction;
-    // pm.addPass(
-    //     openfhe::createConfigureCryptoContext(configureCryptoContextOptions));
+    auto configureCryptoContextOptions =
+        openfhe::ConfigureCryptoContextOptions{};
+    configureCryptoContextOptions.entryFunction = options.entryFunction;
+    pm.addPass(
+        openfhe::createConfigureCryptoContext(configureCryptoContextOptions));
+
+    // Hoist repeated rotations into EvalFastRotation(Precompute)
+    // TODO(#1924): enable openfhe-fast-rotation-precompute in the pipeline
+    // pm.addPass(openfhe::createFastRotationPrecompute());
   };
 }
 

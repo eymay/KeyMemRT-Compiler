@@ -1,11 +1,14 @@
 #ifndef LIB_DIALECT_OPENFHE_TRANSFORMS_PASSES_H_
 #define LIB_DIALECT_OPENFHE_TRANSFORMS_PASSES_H_
 
+// IWYU pragma: begin_keep
 #include "lib/Dialect/Openfhe/IR/OpenfheDialect.h"
 #include "lib/Dialect/Openfhe/Transforms/ConfigureCryptoContext.h"
 #include "lib/Dialect/Openfhe/Transforms/ConvertToInPlace.h"
 #include "lib/Dialect/Openfhe/Transforms/CountAddAndKeySwitch.h"
+#include "lib/Dialect/Openfhe/Transforms/FastRotationPrecompute.h"
 #include "lib/Dialect/Openfhe/Transforms/InsertClearOps.h"
+// IWYU pragma: end_keep
 
 namespace mlir {
 namespace heir {

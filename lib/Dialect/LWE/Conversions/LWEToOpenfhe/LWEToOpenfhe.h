@@ -1,6 +1,10 @@
 #ifndef LIB_DIALECT_LWE_CONVERSIONS_LWETOOPENFHE_LWETOOPENFHE_H_
 #define LIB_DIALECT_LWE_CONVERSIONS_LWETOOPENFHE_LWETOOPENFHE_H_
 
+// IWYU pragma: begin_keep
+#include "mlir/include/mlir/Pass/Pass.h"  // from @llvm-project
+// IWYU pragma: end_keep
+
 #include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/LWE/IR/LWEOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"

@@ -13,9 +13,8 @@
 #include <utility>
 #include <vector>
 
-#include "include/cereal/archives/binary.hpp"           // from @cereal
-#include "include/cereal/archives/json.hpp"             // from @cereal
 #include "include/cereal/archives/portable_binary.hpp"  // from @cereal
+#include "include/cereal/cereal.hpp"                    // from @cereal
 #include "lib/Analysis/SelectVariableNames/SelectVariableNames.h"
 #include "lib/Dialect/LWE/IR/LWEAttributes.h"
 #include "lib/Dialect/LWE/IR/LWEOps.h"
@@ -28,6 +27,7 @@
 #include "llvm/include/llvm/ADT/StringExtras.h"        // from @llvm-project
 #include "llvm/include/llvm/ADT/TypeSwitch.h"          // from @llvm-project
 #include "llvm/include/llvm/Support/Casting.h"         // from @llvm-project
+#include "llvm/include/llvm/Support/ErrorHandling.h"   // from @llvm-project
 #include "llvm/include/llvm/Support/FormatVariadic.h"  // from @llvm-project
 #include "llvm/include/llvm/Support/LogicalResult.h"   // from @llvm-project
 #include "llvm/include/llvm/Support/raw_ostream.h"     // from @llvm-project
@@ -285,7 +285,8 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
                 ChebyshevOp>([&](auto op) { return printOperation(op); })
           .Case<AddPlainInPlaceOp, SubPlainInPlaceOp, AddInPlaceOp,
                 SubInPlaceOp, MulConstInPlaceOp, NegateInPlaceOp,
-                RelinInPlaceOp, RotInPlaceOp, MulInPlaceOp, MulPlainInPlaceOp>(
+                RelinInPlaceOp, RotInPlaceOp, MulInPlaceOp, MulPlainInPlaceOp,
+                FastRotationOp, FastRotationPrecomputeOp>(
               [&](auto op) { return printOperation(op); })
           .Default([&](Operation &) {
             return emitError(op.getLoc(), "unable to find printer for op");
@@ -921,7 +922,8 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
   os << variableNames->getNameForValue(op.getCryptoContext()) << "->EvalRotate("
      << variableNames->getNameForValue(op.getCiphertext()) << ", ";
 
-  // Get rotation index - use the RotKey variable which holds the rotation index value
+  // Get rotation index - use the RotKey variable which holds the rotation index
+  // value
   Value evalKey = op.getEvalKey();
 
   // Try to get the index from various sources
@@ -929,10 +931,13 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
     // Direct from LoadKeyOp - use its index operand
     os << variableNames->getNameForValue(loadOp.getIndex());
   } else if (auto useOp = evalKey.getDefiningOp<kmrt::UseKeyOp>()) {
-    // From UseKeyOp - use its rotation key (which was assigned from a LoadKeyOp)
+    // From UseKeyOp - use its rotation key (which was assigned from a
+    // LoadKeyOp)
     std::string varName = variableNames->getNameForValue(useOp.getRotKey());
-    if (varName.empty() || (varName.find_first_not_of("0123456789") == std::string::npos)) {
-      varName = "rk" + std::to_string(variableNames->getIntForValue(useOp.getRotKey()));
+    if (varName.empty() ||
+        (varName.find_first_not_of("0123456789") == std::string::npos)) {
+      varName = "rk" + std::to_string(
+                           variableNames->getIntForValue(useOp.getRotKey()));
     }
     os << varName;
   } else if (auto assumeOp = evalKey.getDefiningOp<kmrt::AssumeLoadedOp>()) {
@@ -941,7 +946,8 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
   } else {
     // From control flow (scf.if, etc.) - use the RotKey variable directly
     std::string varName = variableNames->getNameForValue(evalKey);
-    if (varName.empty() || (varName.find_first_not_of("0123456789") == std::string::npos)) {
+    if (varName.empty() ||
+        (varName.find_first_not_of("0123456789") == std::string::npos)) {
       varName = "rk" + std::to_string(variableNames->getIntForValue(evalKey));
     }
     os << varName;
@@ -955,18 +961,21 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
 
 // KMRT ops implementations
 LogicalResult OpenFhePkeEmitter::printOperation(kmrt::LoadKeyOp op) {
-  // Emit the rotation key variable assignment with deserializeKey returning the key
+  // Emit the rotation key variable assignment with deserializeKey returning the
+  // key
   Value rotKey = op.getRotKey();
 
   // Check if the value has a name assigned
   if (!variableNames->contains(rotKey)) {
-    return emitError(op->getLoc(), "Rotation key result has no variable name assigned");
+    return emitError(op->getLoc(),
+                     "Rotation key result has no variable name assigned");
   }
 
   std::string varName = variableNames->getNameForValue(rotKey);
 
-  // Workaround: SelectVariableNames sometimes assigns empty/invalid names to rotation keys
-  // If we get an empty name or a name that looks like a number, use a fallback based on the value's unique ID
+  // Workaround: SelectVariableNames sometimes assigns empty/invalid names to
+  // rotation keys If we get an empty name or a name that looks like a number,
+  // use a fallback based on the value's unique ID
   if (varName.empty() || (varName.length() < 2 && std::isdigit(varName[0]))) {
     varName = "rk" + std::to_string(variableNames->getIntForValue(rotKey));
   }
@@ -1075,8 +1084,9 @@ LogicalResult OpenFhePkeEmitter::printOperation(kmrt::ClearKeyOp op) {
 
   std::string varName = variableNames->getNameForValue(rotKey);
 
-  // Workaround: SelectVariableNames sometimes assigns empty/invalid names to rotation keys
-  // If we get an empty name or a name that looks like a number, use a fallback based on the value's unique ID
+  // Workaround: SelectVariableNames sometimes assigns empty/invalid names to
+  // rotation keys If we get an empty name or a name that looks like a number,
+  // use a fallback based on the value's unique ID
   if (varName.empty() || (varName.length() < 2 && std::isdigit(varName[0]))) {
     varName = "rk" + std::to_string(variableNames->getIntForValue(rotKey));
   }
@@ -1107,6 +1117,26 @@ LogicalResult OpenFhePkeEmitter::printOperation(kmrt::PrefetchKeyOp op) {
   }
 
   os << ");\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(FastRotationPrecomputeOp op) {
+  // return type of FastRotationPrecomputeOp is weird, so use auto
+  emitAutoAssignPrefix(op.getResult());
+  os << variableNames->getNameForValue(op.getCryptoContext()) << "->"
+     << "EvalFastRotationPrecompute("
+     << variableNames->getNameForValue(op.getInput()) << ");\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(FastRotationOp op) {
+  emitAutoAssignPrefix(op.getResult());
+  os << variableNames->getNameForValue(op.getCryptoContext()) << "->"
+     << "EvalFastRotation(" << variableNames->getNameForValue(op.getInput())
+     << ", " << op.getIndex().getZExtValue() << ", "
+     << op.getCyclotomicOrder().getZExtValue() << ", "
+     << variableNames->getNameForValue(op.getPrecomputedDigitDecomp())
+     << ");\n";
   return success();
 }
 
