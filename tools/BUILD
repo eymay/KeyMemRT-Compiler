@@ -139,6 +139,7 @@ cc_binary(
         "@heir//lib/Transforms/Secretize",
         "@heir//lib/Transforms/SelectRewrite",
         "@heir//lib/Transforms/StraightLineVectorizer",
+        "@heir//lib/Transforms/SymbolicBSGSDecomposition",
         "@heir//lib/Transforms/TensorLinalgToAffineLoops",
         "@heir//lib/Transforms/TensorToScalars",
         "@heir//lib/Transforms/UnusedMemRef",

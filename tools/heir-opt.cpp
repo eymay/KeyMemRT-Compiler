@@ -92,6 +92,7 @@
 #include "lib/Transforms/Secretize/Passes.h"
 #include "lib/Transforms/SelectRewrite/SelectRewrite.h"
 #include "lib/Transforms/StraightLineVectorizer/StraightLineVectorizer.h"
+#include "lib/Transforms/SymbolicBSGSDecomposition/SymbolicBSGSDecomposition.h"
 #include "lib/Transforms/TensorLinalgToAffineLoops/TensorLinalgToAffineLoops.h"
 #include "lib/Transforms/TensorToScalars/TensorToScalars.h"
 #include "lib/Transforms/UnusedMemRef/UnusedMemRef.h"
@@ -299,6 +300,7 @@ int main(int argc, char **argv) {
   registerFHEFunctionOutliningPasses();
   registerProfileAnnotatorPasses();
   registerMemoryEstimationPasses();
+  registerSymbolicBSGSDecompositionPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS
 #ifndef HEIR_ABC_BINARY

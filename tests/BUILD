@@ -51,6 +51,7 @@ test_suite(
     tests = [
         # Lower linear transform tests
         "//tests/Transforms/lower_linear_transform:test_linear_transform.mlir.test",
+        "//tests/Transforms/symbolic_bsgs_decomposition:test_symbolic_bsgs_decomposition.mlir.test",
         
         # CKKS tests
         # "//tests/Dialect/CKKS:keymemrt_encoding.mlir.test",
