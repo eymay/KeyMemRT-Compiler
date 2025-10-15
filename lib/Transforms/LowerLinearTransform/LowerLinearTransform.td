@@ -45,9 +45,11 @@ def LowerLinearTransform : Pass<"lower-linear-transform", "func::FuncOp"> {
   }];
 
   let dependentDialects = [
-    "mlir::heir::ckks::CKKSDialect",
+    "mlir::heir::openfhe::OpenfheDialect",
     "mlir::heir::lwe::LWEDialect",
-    "mlir::arith::ArithDialect"
+    "mlir::arith::ArithDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::affine::AffineDialect"
   ];
 }
 #endif  // LIB_TRANSFORMS_LOWERLINEARTRANSFORM_LOWERLINEARTRANSFORM_TD_

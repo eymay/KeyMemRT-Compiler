@@ -282,4 +282,37 @@ def ReinterpretApplicationDataOp : LWE_Op<"reinterpret_application_data", []> {
   let hasVerifier = 1;
 }
 
+def LWE_LinearTransformOp : LWE_Op<"linear_transform"> {
+  let summary = "Linear transformation operation using precomputed diagonal plaintexts";
+  let description = [{
+    This operation performs a linear transformation using precomputed diagonal plaintexts.
+    It's commonly used in homomorphic encryption to implement matrix-vector multiplication
+    or convolution operations efficiently using the diagonal method and rotations.
+    
+    The operation takes a ciphertext input and plaintext weights (diagonals) as inputs,
+    and produces a ciphertext result representing the linear transformation.
+    
+    Attributes:
+    - diagonal_count: Number of diagonals in the weight matrix
+    - slots: Number of slots in the ciphertext
+  }];
+
+  let arguments = (ins
+    NewLWECiphertext:$input,
+    NewLWEPlaintext:$weights,
+    I32Attr:$diagonal_count,
+    I32Attr:$slots
+  );
+
+  let results = (outs
+    NewLWECiphertext:$result
+  );
+
+  let assemblyFormat = [{
+    $input `,` $weights 
+    attr-dict `:` `(` qualified(type($input)) `,` qualified(type($weights)) `)` 
+    `->` qualified(type($result))
+  }];
+}
+
 #endif  // LIB_DIALECT_LWE_IR_LWEOPS_TD_

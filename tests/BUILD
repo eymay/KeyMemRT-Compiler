@@ -45,3 +45,19 @@ exports_files(
         "run_lit.sh",
     ],
 )
+
+test_suite(
+    name = "keymemrt_tests",
+    tests = [
+        # Lower linear transform tests
+        "//tests/Transforms/lower_linear_transform:test_linear_transform.mlir.test",
+        
+        # CKKS tests
+        # "//tests/Dialect/CKKS:keymemrt_encoding.mlir.test",
+        
+        # OpenFHE tests
+        # "//tests/Transforms/mlir_to_openfhe_ckks:keymemrt_integration.mlir.test",
+        
+        # Add any test from anywhere in the repo
+    ],
+)

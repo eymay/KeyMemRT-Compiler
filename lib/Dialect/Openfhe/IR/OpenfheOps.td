@@ -730,4 +730,29 @@ def ClearKeyGlobalOp : Openfhe_Op<"clear_key_global"> {
   }];
 }
 
+def Openfhe_LinearTransformOp : Openfhe_Op<"linear_transform"> {
+  let summary = "Linear transformation operation using diagonal method";
+  let description = [{
+    This high-level operation represents a linear transformation that will be
+    lowered to either unrolled operations or affine loops.
+  }];
+
+  let arguments = (ins
+    Openfhe_CryptoContext:$crypto_context,
+    NewLWECiphertext:$ciphertext,
+    AnyRankedTensor:$weights,
+    I32Attr:$diagonal_count,
+    I32Attr:$slots
+  );
+
+  let results = (outs
+    NewLWECiphertext:$result
+  );
+
+  let assemblyFormat = [{
+    $crypto_context `,` $ciphertext `,` $weights
+    attr-dict `:` `(` type($ciphertext) `,` type($weights) `)` `->` type($result)
+  }];
+}
+
 #endif  // LIB_DIALECT_OPENFHE_IR_OPENFHEOPS_TD_

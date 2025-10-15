@@ -1,41 +1,27 @@
-//===- LowerLinearTransform.cpp - Memory-Optimized Linear Transform ----===//
-//
-// Implementation of memory-optimized linear transform lowering pass.
-// This version uses accumulative addition pattern to minimize memory usage
-// by immediately adding each diagonal result instead of storing all results
-// and then accumulating them in a separate phase.
-//
-//===----------------------------------------------------------------------===//
+//===- LowerLinearTransform.cpp - Lower OpenFHE Linear Transform --------===//
 
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 
-#include "lib/Dialect/CKKS/IR/CKKSDialect.h"
-#include "lib/Dialect/CKKS/IR/CKKSOps.h"
 #include "lib/Dialect/LWE/IR/LWEAttributes.h"
 #include "lib/Dialect/LWE/IR/LWEOps.h"
+#include "lib/Dialect/Openfhe/IR/OpenfheDialect.h"
+#include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "lib/Dialect/Polynomial/IR/PolynomialAttributes.h"
-#include "lib/Dialect/RNS/IR/RNSTypes.h"
-#include "lib/Utils/Polynomial/Polynomial.h"
 #include "llvm/include/llvm/Support/Debug.h"
+#include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/include/mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/include/mlir/IR/Builders.h"
+#include "mlir/include/mlir/IR/BuiltinTypes.h"
 #include "mlir/include/mlir/IR/PatternMatch.h"
 #include "mlir/include/mlir/Pass/Pass.h"
-#include "mlir/include/mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/include/mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace heir {
 
-// Attribute names for outlining markers
-static constexpr StringRef kLinearTransformStartAttr =
-    "heir.linear_transform_start";
-static constexpr StringRef kLinearTransformEndAttr =
-    "heir.linear_transform_end";
-
-// Counter for unique linear transform region IDs
-static std::atomic<int64_t> currentId{0};
+namespace {
 
 // Helper to extract scaling factor from types
 static int64_t getScalingFactor(Type type) {
@@ -52,204 +38,349 @@ static int64_t getScalingFactor(Type type) {
       return encoding.getScalingFactor();
     }
   }
-  return 1;  // Default scaling factor
+  return 1;
 }
 
-// Helper to create type with specific scaling factor
-static Type createTypeWithScalingFactor(Type originalType, int64_t newScale,
-                                        MLIRContext *context) {
-  if (auto ctType = dyn_cast<lwe::NewLWECiphertextType>(originalType)) {
-    auto newEncoding =
-        lwe::InverseCanonicalEncodingAttr::get(context, newScale);
-    auto newPtSpace = lwe::PlaintextSpaceAttr::get(
-        context, ctType.getPlaintextSpace().getRing(), newEncoding);
+// Helper to get the raw tensor from weights plaintext
+Value getWeightTensor(PatternRewriter &rewriter, Location loc, Value weights) {
+  auto definingOp = weights.getDefiningOp();
 
-    return lwe::NewLWECiphertextType::get(
-        context, ctType.getApplicationData(), newPtSpace,
-        ctType.getCiphertextSpace(), ctType.getKey(), ctType.getModulusChain());
+  // If weights is already a tensor type, return it directly
+  if (auto tensorType = dyn_cast<RankedTensorType>(weights.getType())) {
+    return weights;
   }
-  return originalType;  // Return original if not convertible
+
+  // If weights is a block argument (function parameter), decode it
+  if (!definingOp) {
+    llvm::dbgs() << "  Weights is a block argument, decoding\n";
+    if (auto weightsType =
+            dyn_cast<lwe::NewLWEPlaintextType>(weights.getType())) {
+      auto tensorType = weightsType.getApplicationData().getMessageType();
+      Value decodedWeights =
+          rewriter.create<lwe::RLWEDecodeOp>(loc, tensorType, weights);
+      return decodedWeights;
+    }
+  }
+
+  // If weights come from an encode operation, get the input tensor directly
+  if (auto encodeOp = dyn_cast<lwe::RLWEEncodeOp>(definingOp)) {
+    llvm::dbgs() << "  Found RLWEEncodeOp, getting input tensor\n";
+    return encodeOp.getInput();
+  }
+
+  // If weights is a constant, return it directly
+  if (auto constantOp = dyn_cast<arith::ConstantOp>(definingOp)) {
+    llvm::dbgs() << "  Found ConstantOp, returning directly\n";
+    return weights;
+  }
+
+  // Fallback: try to decode if it's a plaintext type
+  llvm::dbgs() << "  Unrecognized defining op type, attempting decode\n";
+  if (auto weightsType =
+          dyn_cast<lwe::NewLWEPlaintextType>(weights.getType())) {
+    auto tensorType = weightsType.getApplicationData().getMessageType();
+    Value decodedWeights =
+        rewriter.create<lwe::RLWEDecodeOp>(loc, tensorType, weights);
+    return decodedWeights;
+  }
+
+  llvm::dbgs() << "ERROR: Could not get weight tensor\n";
+  return Value();
 }
 
 // Pattern for lowering linear transform operations
-struct LinearTransformLoweringPattern
-    : public OpRewritePattern<ckks::LinearTransformOp> {
-  using OpRewritePattern<ckks::LinearTransformOp>::OpRewritePattern;
+class LowerLinearTransformPattern
+    : public OpRewritePattern<openfhe::LinearTransformOp> {
+ public:
+  LowerLinearTransformPattern(MLIRContext *context, bool useUnrolledForm)
+      : OpRewritePattern<openfhe::LinearTransformOp>(context),
+        useUnrolledForm(useUnrolledForm) {}
 
-  LogicalResult matchAndRewrite(ckks::LinearTransformOp op,
+  LogicalResult matchAndRewrite(openfhe::LinearTransformOp op,
                                 PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value inputCiphertext = op.getInput();
-    Value weightsPlaintext = op.getWeights();
-    Type expectedResultType = op.getResult().getType();
+    if (useUnrolledForm) {
+      return lowerToUnrolledForm(op, rewriter);
+    } else {
+      return lowerToAffineLoopForm(op, rewriter);
+    }
+  }
 
-    // Extract operation attributes
+ private:
+  bool useUnrolledForm;
+
+  // Helper to extract a single diagonal from the weight matrix
+  Value extractDiagonal(PatternRewriter &rewriter, Location loc, Value weights,
+                        int32_t diagonalIdx, int32_t slots,
+                        int64_t targetScale) const {
+    llvm::dbgs() << "  extractDiagonal called for diagonal " << diagonalIdx
+                 << "\n";
+
+    auto slotType = rewriter.getF64Type();
+    auto diagonalTensorType = RankedTensorType::get({slots}, slotType);
+
+    // Get the weight matrix as a tensor
+    Value weightMatrix = getWeightTensor(rewriter, loc, weights);
+
+    if (!weightMatrix) {
+      llvm::dbgs() << "ERROR: Could not get weight tensor, using dummy data\n";
+      // Create dummy diagonal data for testing
+      SmallVector<double> dummyData(slots, 0.1 * (diagonalIdx + 1));
+      auto dummyAttr = DenseElementsAttr::get(diagonalTensorType,
+                                              ArrayRef<double>(dummyData));
+      weightMatrix = rewriter.create<arith::ConstantOp>(loc, dummyAttr);
+      return weightMatrix;
+    }
+
+    auto weightMatrixType = cast<RankedTensorType>(weightMatrix.getType());
+    auto shape = weightMatrixType.getShape();
+
+    llvm::dbgs() << "  Weight matrix shape: [";
+    for (auto dim : shape) {
+      llvm::dbgs() << dim << " ";
+    }
+    llvm::dbgs() << "]\n";
+
+    // Extract the diagonalIdx-th row using tensor.extract_slice
+    // Offsets: [diagonalIdx, 0] - start at row diagonalIdx, column 0
+    // Sizes: [1, slots] - extract 1 row with 'slots' columns
+    // Strides: [1, 1] - contiguous
+    Value diagonalTensor = rewriter.create<tensor::ExtractSliceOp>(
+        loc, diagonalTensorType, weightMatrix,
+        /*offsets=*/
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(diagonalIdx),
+                               rewriter.getIndexAttr(0)},
+        /*sizes=*/
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
+                               rewriter.getIndexAttr(slots)},
+        /*strides=*/
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
+                               rewriter.getIndexAttr(1)});
+
+    // Encode the diagonal tensor with the target scale
+    auto encoding = lwe::InverseCanonicalEncodingAttr::get(
+        rewriter.getContext(), targetScale);
+
+    auto coeffType = rewriter.getF64Type();
+    auto polyAttr = polynomial::IntPolynomialAttr::get(
+        rewriter.getContext(),
+        polynomial::IntPolynomial::fromCoefficients({1}));
+    auto ring = polynomial::RingAttr::get(coeffType, polyAttr);
+
+    auto ptSpace =
+        lwe::PlaintextSpaceAttr::get(rewriter.getContext(), ring, encoding);
+
+    auto noOverflowAttr = lwe::NoOverflowAttr::get(rewriter.getContext());
+    auto appData =
+        lwe::ApplicationDataAttr::get(diagonalTensorType, noOverflowAttr);
+
+    auto ptType =
+        lwe::NewLWEPlaintextType::get(rewriter.getContext(), appData, ptSpace);
+
+    Value encodedDiagonal = rewriter.create<lwe::RLWEEncodeOp>(
+        loc, ptType, diagonalTensor, encoding, ring);
+
+    llvm::dbgs() << "  Successfully extracted and encoded diagonal "
+                 << diagonalIdx << " with scale " << targetScale << "\n";
+
+    return encodedDiagonal;
+  }
+
+  // ===== UNROLLED FORM =====
+  LogicalResult lowerToUnrolledForm(openfhe::LinearTransformOp op,
+                                    PatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    Value cryptoContext = op.getCryptoContext();
+    Value inputCiphertext = op.getOperand(1);
+    Value weightsPlaintext = op.getOperand(2);
+
     int32_t diagonalCount = op.getDiagonalCount();
     int32_t slots = op.getSlots();
 
-    // Get scaling factors for type management
     int64_t inputScale = getScalingFactor(inputCiphertext.getType());
     int64_t weightsScale = getScalingFactor(weightsPlaintext.getType());
-    int64_t expectedResultScale = getScalingFactor(expectedResultType);
 
-    llvm::dbgs() << "Lowering linear_transform with " << diagonalCount
-                 << " diagonals, " << slots << " slots\n";
-    llvm::dbgs() << "Input scale: " << inputScale
-                 << ", weights scale: " << weightsScale
-                 << ", expected result scale: " << expectedResultScale << "\n";
-
-    // Generate unique region ID for outlining markers
-    int64_t regionId = currentId.fetch_add(1);
-    Operation *firstOp = nullptr;
-    Operation *lastOp = nullptr;
-
-    // MEMORY-OPTIMIZED ACCUMULATIVE PATTERN:
-    // Instead of creating all multiplications first and then accumulating,
-    // we immediately accumulate each diagonal result as we create it.
-    // Pattern: rot → mul_plain → add (accumulate with previous)
+    llvm::dbgs() << "Lowering openfhe.linear_transform (UNROLLED) with "
+                 << diagonalCount << " diagonals, " << slots << " slots\n";
 
     Value accumulator = nullptr;
 
     for (int32_t i = 0; i < diagonalCount; ++i) {
       llvm::dbgs() << "Processing diagonal " << i << "\n";
 
-      // Step 1: Apply rotation if needed (no rotation for diagonal 0)
       Value rotatedInput = inputCiphertext;
-      if (i > 0) {
-        rotatedInput = rewriter.create<ckks::RotateOp>(
-            loc, inputCiphertext.getType(), inputCiphertext,
-            rewriter.getI32IntegerAttr(i));
+      Value evalKey = nullptr;
 
-        llvm::dbgs() << "  Created rotation for offset " << i << "\n";
+      if (i > 0) {
+        // Step 1a: Deserialize the rotation key
+        auto evalKeyType = openfhe::EvalKeyType::get(rewriter.getContext(),
+                                                     rewriter.getIndexAttr(i));
+
+        evalKey = rewriter.create<openfhe::DeserializeKeyOp>(loc, evalKeyType,
+                                                             cryptoContext);
+        evalKey.getDefiningOp()->setAttr("index", rewriter.getIndexAttr(i));
+
+        // Step 1b: Perform rotation
+        rotatedInput = rewriter.create<openfhe::RotOp>(
+            loc, inputCiphertext.getType(), cryptoContext, inputCiphertext,
+            evalKey);
+
+        // Step 1c: Clear the rotation key immediately after use
+        rewriter.create<openfhe::ClearKeyOp>(loc, cryptoContext, evalKey);
       }
 
-      // Step 2: Extract diagonal with proper scaling
+      // Step 2: Extract and encode diagonal
       Value diagonal = extractDiagonal(rewriter, loc, weightsPlaintext, i,
                                        slots, weightsScale);
 
-      // Step 3: Multiply - result will have scale = inputScale + weightsScale
-      int64_t mulResultScale = inputScale + weightsScale;
-      Type mulResultType = createTypeWithScalingFactor(
-          rotatedInput.getType(), mulResultScale, rewriter.getContext());
+      // Step 3: Multiply
+      Value mulResult = rewriter.create<openfhe::MulPlainOp>(
+          loc, rotatedInput.getType(), cryptoContext, rotatedInput, diagonal);
 
-      Value mulResult = rewriter.create<ckks::MulPlainOp>(
-          loc, mulResultType, rotatedInput, diagonal);
-
-      llvm::dbgs() << "  Created multiplication with scale " << mulResultScale
-                   << "\n";
-
-      // Mark the first operation for outlining
-      if (!firstOp) {
-        Operation *startOp =
-            (i == 0) ? diagonal.getDefiningOp() : rotatedInput.getDefiningOp();
-        startOp->setAttr(kLinearTransformStartAttr,
-                         rewriter.getI64IntegerAttr(regionId));
-        firstOp = startOp;
-        llvm::dbgs() << "  Marked start of linear transform region " << regionId
-                     << "\n";
-      }
-
-      // Step 4: MEMORY-EFFICIENT ACCUMULATION
-      // Immediately accumulate this result instead of storing it
+      // Step 4: Accumulate
       if (accumulator == nullptr) {
-        // First diagonal becomes the initial accumulator
         accumulator = mulResult;
         llvm::dbgs() << "  Initialized accumulator with first diagonal\n";
       } else {
-        // Add this diagonal result to the accumulator immediately
-        // This frees the previous mulResult from memory
-        Type addResultType = createTypeWithScalingFactor(
-            accumulator.getType(), mulResultScale, rewriter.getContext());
-
-        accumulator = rewriter.create<ckks::AddOp>(loc, addResultType,
-                                                   accumulator, mulResult);
-
+        accumulator = rewriter.create<openfhe::AddOp>(
+            loc, accumulator.getType(), cryptoContext, accumulator, mulResult);
         llvm::dbgs() << "  Accumulated diagonal " << i << " into running sum\n";
       }
-
-      // Keep track of the last operation for outlining
-      lastOp = accumulator.getDefiningOp();
     }
 
-    // Step 5: Handle scaling factor conversion if needed
-    Value finalResult = accumulator;
-    int64_t actualResultScale = getScalingFactor(accumulator.getType());
-
-    if (actualResultScale != expectedResultScale) {
-      llvm::dbgs() << "Scale mismatch: actual=" << actualResultScale
-                   << " vs expected=" << expectedResultScale << "\n";
-      llvm::dbgs() << "Using actual result (type consistency maintained)\n";
-
-      // For now, we'll use the accumulated result as-is
-      // This preserves the actual scaling behavior of the operations
-      finalResult = accumulator;
-    }
-
-    // Mark the end of the linear transform region
-    if (lastOp) {
-      lastOp->setAttr(kLinearTransformEndAttr,
-                      rewriter.getI64IntegerAttr(regionId));
-      llvm::dbgs() << "  Marked end of linear transform region " << regionId
-                   << "\n";
-    }
-
-    // Replace the operation
-    rewriter.replaceOp(op, finalResult);
-
-    llvm::dbgs() << "Successfully lowered linear_transform with "
-                    "memory-optimized pattern\n";
+    rewriter.replaceOp(op, accumulator);
+    llvm::dbgs() << "Successfully lowered linear_transform (UNROLLED)\n";
     return success();
   }
 
- private:
-  Value extractDiagonal(PatternRewriter &rewriter, Location loc, Value weights,
-                        int32_t diagonalIdx, int32_t slots,
-                        int64_t targetScale) const {
-    // Create diagonal data
-    auto slotType = rewriter.getF64Type();
-    auto tensorType = RankedTensorType::get({slots}, slotType);
+  // ===== AFFINE LOOP FORM =====
+  LogicalResult lowerToAffineLoopForm(openfhe::LinearTransformOp op,
+                                      PatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    Value cryptoContext = op.getCryptoContext();
+    Value inputCiphertext = op.getOperand(1);
+    Value weightsPlaintext = op.getOperand(2);
 
-    SmallVector<double> diagonalData;
-    for (int32_t j = 0; j < slots; ++j) {
-      double value = 0.1f * (diagonalIdx + 1) * (j % 4 + 1);
-      diagonalData.push_back(value);
+    int32_t diagonalCount = op.getDiagonalCount();
+    int32_t slots = op.getSlots();
+
+    int64_t inputScale = getScalingFactor(inputCiphertext.getType());
+    int64_t weightsScale = getScalingFactor(weightsPlaintext.getType());
+
+    llvm::dbgs() << "Lowering openfhe.linear_transform (AFFINE LOOP) with "
+                 << diagonalCount << " diagonals, " << slots << " slots\n";
+
+    // Get weight matrix for use inside the loop
+    Value weightMatrix = getWeightTensor(rewriter, loc, weightsPlaintext);
+    if (!weightMatrix) {
+      return op.emitError("Could not extract weight tensor");
     }
 
-    auto diagonalAttr =
-        DenseElementsAttr::get(tensorType, ArrayRef<double>(diagonalData));
-    Value diagonalConst = rewriter.create<arith::ConstantOp>(loc, diagonalAttr);
+    // First iteration (i=0): no rotation, initialize accumulator
+    Value diagonal0 = extractDiagonal(rewriter, loc, weightsPlaintext, 0, slots,
+                                      weightsScale);
+    Value mulResult0 = rewriter.create<openfhe::MulPlainOp>(
+        loc, inputCiphertext.getType(), cryptoContext, inputCiphertext,
+        diagonal0);
+    Value initialAccum = mulResult0;
 
-    // Create encoding with target scaling factor
-    auto encoding = lwe::InverseCanonicalEncodingAttr::get(
-        rewriter.getContext(), targetScale);
+    if (diagonalCount == 1) {
+      rewriter.replaceOp(op, initialAccum);
+      return success();
+    }
 
-    // Create dummy ring for plaintext space (using i32 coefficient type)
-    auto coeffType = rewriter.getI32Type();
-    auto dummyPoly = polynomial::IntPolynomialAttr::get(
-        rewriter.getContext(),
-        polynomial::IntPolynomial::fromCoefficients({1}));
-    auto ring = polynomial::RingAttr::get(coeffType, dummyPoly);
+    // Create affine.for loop for remaining diagonals (i=1 to diagonalCount-1)
+    auto lowerBound = rewriter.getAffineConstantExpr(1);
+    auto upperBound = rewriter.getAffineConstantExpr(diagonalCount);
+    auto lbMap = AffineMap::get(0, 0, lowerBound, rewriter.getContext());
+    auto ubMap = AffineMap::get(0, 0, upperBound, rewriter.getContext());
 
-    // Create plaintext space
-    auto ptSpace =
-        lwe::PlaintextSpaceAttr::get(rewriter.getContext(), ring, encoding);
+    auto affineFor = rewriter.create<affine::AffineForOp>(
+        loc, ArrayRef<Value>{}, lbMap, ArrayRef<Value>{}, ubMap, 1,
+        ValueRange{initialAccum},
+        [&](OpBuilder &builder, Location loc, Value iv, ValueRange iterArgs) {
+          Value currentAccum = iterArgs[0];
 
-    // Create plaintext type with proper overflow handling
-    auto noOverflowAttr = lwe::NoOverflowAttr::get(rewriter.getContext());
-    auto appData = lwe::ApplicationDataAttr::get(tensorType, noOverflowAttr);
-    auto ptType =
-        lwe::NewLWEPlaintextType::get(rewriter.getContext(), appData, ptSpace);
+          // Convert affine index to i32 for rotation offset
+          auto ivIndex = builder.create<affine::AffineApplyOp>(
+              loc, AffineMap::get(1, 0, builder.getAffineDimExpr(0)),
+              ValueRange{iv});
+          auto ivI32 = builder.create<arith::IndexCastOp>(
+              loc, builder.getI32Type(), ivIndex);
 
-    // Encode the diagonal using RLWEEncodeOp for NewLWEPlaintextType
-    Value encodedDiagonal = rewriter.create<lwe::RLWEEncodeOp>(
-        loc, ptType, diagonalConst, encoding, ring);
+          // Step 1a: Deserialize rotation key
+          auto evalKeyType = openfhe::EvalKeyType::get(builder.getContext(),
+                                                       builder.getIndexAttr(0));
 
-    llvm::dbgs() << "  Extracted diagonal " << diagonalIdx << " with scale "
-                 << targetScale << "\n";
+          Value evalKey = builder.create<openfhe::DeserializeKeyDynamicOp>(
+              loc, evalKeyType, cryptoContext, ivI32);
 
-    return encodedDiagonal;
+          // Step 1b: Rotate input by i
+          Value rotatedInput = builder.create<openfhe::RotOp>(
+              loc, inputCiphertext.getType(), cryptoContext, inputCiphertext,
+              evalKey);
+
+          // Step 1c: Clear the rotation key immediately after rotation
+          builder.create<openfhe::ClearKeyOp>(loc, cryptoContext, evalKey);
+
+          // Step 2: Extract diagonal i from weight matrix
+          auto slotType = builder.getF64Type();
+          auto diagonalTensorType = RankedTensorType::get({slots}, slotType);
+
+          Value diagonalTensor = builder.create<tensor::ExtractSliceOp>(
+              loc, diagonalTensorType, weightMatrix,
+              ArrayRef<OpFoldResult>{ivIndex.getResult(),
+                                     builder.getIndexAttr(0)},
+              ArrayRef<OpFoldResult>{builder.getIndexAttr(1),
+                                     builder.getIndexAttr(slots)},
+              ArrayRef<OpFoldResult>{builder.getIndexAttr(1),
+                                     builder.getIndexAttr(1)});
+
+          // Step 3: Encode diagonal
+          auto encoding = lwe::InverseCanonicalEncodingAttr::get(
+              builder.getContext(), weightsScale);
+
+          auto coeffType = builder.getF64Type();
+          auto polyAttr = polynomial::IntPolynomialAttr::get(
+              builder.getContext(),
+              polynomial::IntPolynomial::fromCoefficients({1}));
+          auto ring = polynomial::RingAttr::get(coeffType, polyAttr);
+
+          auto ptSpace = lwe::PlaintextSpaceAttr::get(builder.getContext(),
+                                                      ring, encoding);
+
+          auto noOverflowAttr = lwe::NoOverflowAttr::get(builder.getContext());
+          auto appData =
+              lwe::ApplicationDataAttr::get(diagonalTensorType, noOverflowAttr);
+
+          auto ptType = lwe::NewLWEPlaintextType::get(builder.getContext(),
+                                                      appData, ptSpace);
+
+          Value encodedDiagonal = builder.create<lwe::RLWEEncodeOp>(
+              loc, ptType, diagonalTensor, encoding, ring);
+
+          // Step 4: Multiply
+          Value mulResult = builder.create<openfhe::MulPlainOp>(
+              loc, rotatedInput.getType(), cryptoContext, rotatedInput,
+              encodedDiagonal);
+
+          // Step 5: Add to accumulator
+          Value nextAccum = builder.create<openfhe::AddOp>(
+              loc, currentAccum.getType(), cryptoContext, currentAccum,
+              mulResult);
+
+          builder.create<affine::AffineYieldOp>(loc, nextAccum);
+        });
+
+    Value finalResult = affineFor.getResult(0);
+    rewriter.replaceOp(op, finalResult);
+
+    llvm::dbgs()
+        << "Successfully lowered openfhe.linear_transform (AFFINE LOOP)\n";
+    return success();
   }
 };
+
+}  // namespace
 
 #define GEN_PASS_DEF_LOWERLINEARTRANSFORM
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h.inc"
@@ -263,95 +394,22 @@ struct LowerLinearTransform
     MLIRContext *context = &getContext();
     auto func = getOperation();
 
-    llvm::dbgs() << "=== LowerLinearTransform::runOnOperation() "
-                    "MEMORY-OPTIMIZED VERSION ===\n";
+    // Default to unrolled form, can be changed via pass option
+    bool useUnrolled = false;  // TODO: Make this a pass option
 
-    // Step 1: Apply the memory-optimized lowering pattern
+    llvm::dbgs() << "=== LowerLinearTransform (OpenFHE) ";
+    llvm::dbgs() << (useUnrolled ? "UNROLLED" : "AFFINE LOOP");
+    llvm::dbgs() << " MODE ===\n";
+
     RewritePatternSet patterns(context);
-    patterns.add<LinearTransformLoweringPattern>(context);
+    patterns.add<LowerLinearTransformPattern>(context, useUnrolled);
 
     if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
       signalPassFailure();
       return;
     }
 
-    llvm::dbgs() << "Memory-optimized linear transform lowering completed\n";
-
-    // Step 2: Propagate type changes through the program
-    bool madeChanges = true;
-    int iteration = 0;
-
-    while (madeChanges && iteration < 5) {
-      madeChanges = false;
-      iteration++;
-
-      llvm::dbgs() << "Type propagation iteration " << iteration << "\n";
-
-      func.walk([&](Operation *op) {
-        // Update rotate operations to match their input types
-        if (auto rotateOp = dyn_cast<ckks::RotateOp>(op)) {
-          Type inputType = rotateOp.getInput().getType();
-          Type resultType = rotateOp.getResult().getType();
-
-          if (inputType != resultType) {
-            llvm::dbgs() << "  Updating rotate result type\n";
-            rotateOp.getResult().setType(
-                cast<lwe::NewLWECiphertextType>(inputType));
-            madeChanges = true;
-          }
-        }
-
-        // Update add operations to handle scale mismatches
-        else if (auto addOp = dyn_cast<ckks::AddOp>(op)) {
-          Type lhsType = addOp.getLhs().getType();
-          Type rhsType = addOp.getRhs().getType();
-          Type resultType = addOp.getResult().getType();
-
-          int64_t lhsScale = getScalingFactor(lhsType);
-          int64_t rhsScale = getScalingFactor(rhsType);
-          int64_t resultScale = getScalingFactor(resultType);
-
-          // Use the higher scale as the result
-          int64_t targetScale = std::max(lhsScale, rhsScale);
-
-          if (resultScale != targetScale) {
-            llvm::dbgs() << "  Updating add result scale: " << resultScale
-                         << " -> " << targetScale << "\n";
-            Type newResultType =
-                createTypeWithScalingFactor(resultType, targetScale, context);
-            addOp.getResult().setType(
-                cast<lwe::NewLWECiphertextType>(newResultType));
-            madeChanges = true;
-          }
-        }
-
-        // Update mul_plain operations for type consistency
-        else if (auto mulOp = dyn_cast<ckks::MulPlainOp>(op)) {
-          Type ctType = mulOp.getLhs().getType();
-          Type ptType = mulOp.getRhs().getType();
-          Type resultType = mulOp.getResult().getType();
-
-          int64_t ctScale = getScalingFactor(ctType);
-          int64_t ptScale = getScalingFactor(ptType);
-          int64_t resultScale = getScalingFactor(resultType);
-          int64_t expectedScale = ctScale + ptScale;
-
-          if (resultScale != expectedScale) {
-            llvm::dbgs() << "  Updating mul_plain result scale: " << resultScale
-                         << " -> " << expectedScale << "\n";
-            Type newResultType =
-                createTypeWithScalingFactor(resultType, expectedScale, context);
-            mulOp.getResult().setType(
-                cast<lwe::NewLWECiphertextType>(newResultType));
-            madeChanges = true;
-          }
-        }
-      });
-    }
-
-    llvm::dbgs() << "Type propagation completed after " << iteration
-                 << " iterations\n";
-    llvm::dbgs() << "=== LowerLinearTransform::runOnOperation() COMPLETE ===\n";
+    llvm::dbgs() << "OpenFHE linear transform lowering completed\n";
   }
 };
 

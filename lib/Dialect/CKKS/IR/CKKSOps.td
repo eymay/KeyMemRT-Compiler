@@ -261,7 +261,7 @@ def CKKS_LinearTransformOp : CKKS_Op<"linear_transform"> {
 
   let arguments = (ins
     NewLWECiphertext:$input,
-    NewLWEPlaintext:$weights,
+    AnyRankedTensor:$weights,
     
     // Block matrix coordinates
     DefaultValuedAttr<I32Attr, "0">:$block_row,
@@ -288,7 +288,7 @@ def CKKS_LinearTransformOp : CKKS_Op<"linear_transform"> {
     NewLWECiphertext:$output
   );
 
-  let assemblyFormat = "$input `,` $weights attr-dict `:` `(` type($input) `,` type($weights) `)` `->` type($output)" ;
+  let assemblyFormat = "$input `,` $weights attr-dict `:` `(` type($input) `,` qualified(type($weights)) `)` `->` type($output)" ;
 }
 
 def CKKS_ChebyshevOp : CKKS_Op<"chebyshev"> {

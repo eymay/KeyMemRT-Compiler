@@ -29,6 +29,24 @@ static void preserveLinearTransformAttrs(Operation *from, Operation *to) {
   }
 }
 
+struct ConvertLinearTransformOp
+    : public OpRewritePattern<ckks::LinearTransformOp> {
+  using OpRewritePattern<ckks::LinearTransformOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ckks::LinearTransformOp op,
+                                PatternRewriter &rewriter) const override {
+    // Create LWE linear transform op with same operands and attributes
+    auto newOp = rewriter.replaceOpWithNewOp<lwe::LinearTransformOp>(
+        op, op.getResult().getType(), op.getInput(), op.getWeights(),
+        op.getDiagonalCountAttr(), op.getSlotsAttr());
+
+    // Preserve any linear transform attributes
+    preserveLinearTransformAttrs(op.getOperation(), newOp.getOperation());
+
+    return success();
+  }
+};
+
 // Replace your existing Convert template usage with this enhanced version:
 template <typename FromOp, typename ToOp>
 struct ConvertWithAttrs : public OpRewritePattern<FromOp> {

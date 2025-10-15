@@ -101,6 +101,30 @@ struct AddCryptoContextArg : public OpConversionPattern<func::FuncOp> {
   }
 };
 
+struct ConvertLinearTransformOp
+    : public OpConversionPattern<ckks::LinearTransformOp> {
+  ConvertLinearTransformOp(mlir::MLIRContext *context)
+      : OpConversionPattern<ckks::LinearTransformOp>(context) {}
+
+  using OpConversionPattern<ckks::LinearTransformOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      ckks::LinearTransformOp op, ckks::LinearTransformOp::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    FailureOr<Value> result = getContextualCryptoContext(op.getOperation());
+    if (failed(result)) return result;
+
+    Value cryptoContext = result.value();
+
+    // Convert directly from CKKS to OpenFHE - no intermediate LWE op
+    rewriter.replaceOpWithNewOp<openfhe::LinearTransformOp>(
+        op, op.getResult().getType(), cryptoContext, adaptor.getInput(),
+        adaptor.getWeights(), op.getDiagonalCountAttr(), op.getSlotsAttr());
+
+    return success();
+  }
+};
+
 struct ConvertFuncCallOp : public OpConversionPattern<func::CallOp> {
   ConvertFuncCallOp(mlir::MLIRContext *context)
       : OpConversionPattern<func::CallOp>(context) {}
@@ -453,7 +477,7 @@ struct LWEToOpenfhe : public impl::LWEToOpenfheBase<LWEToOpenfhe> {
         lwe::ConvertLevelReduceOp<bgv::LevelReduceOp>,
         lwe::ConvertLevelReduceOp<ckks::LevelReduceOp>,
         // Bootstrap (CKKS only)
-        ConvertBootstrapOp, ConvertChebyshevOp
+        ConvertBootstrapOp, ConvertChebyshevOp, ConvertLinearTransformOp
         // End of Pattern List
         >(typeConverter, context);
 
