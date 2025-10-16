@@ -25,15 +25,43 @@ class KMRT_Type<string name, string typeMnemonic, list<Trait> traits = []>
 }
 
 def KMRT_RotKeyType : KMRT_Type<"RotKey", "rot_key"> {
-  let summary = "A rotation key type with an index parameter";
+  let summary = "A rotation key type with optional static index parameter";
   let description = [{
     The RotKeyType represents rotation keys used in the KeyMemRT system.
-    Each rotation key has an associated rotation_index that identifies the specific
-    rotation amount or key identifier.
+
+    - If rotation_index is present: Static constant rotation key
+    - If rotation_index is absent: Dynamic rotation key (determined at runtime,
+      e.g., from affine loop induction variables)
+
+    For dynamic rotation keys, analysis passes examine the LoadKeyOp's index
+    operand to determine the range of possible rotation values by tracing through
+    SSA def-use chains and analyzing affine contexts.
+
+    Examples:
+      !kmrt.rot_key<rotation_index = 5>    // Static rotation key for index 5
+      !kmrt.rot_key                         // Dynamic rotation key
   }];
 
-  let parameters = (ins "int64_t":$rotation_index);
+  let parameters = (ins OptionalParameter<"std::optional<int64_t>", "std::nullopt">:$rotation_index);
   let asmName = "rk";
+
+  let extraClassDeclaration = [{
+    // Check if this is a static constant rotation key
+    bool isStatic() const {
+      return getRotationIndex().has_value();
+    }
+
+    // Check if this is a dynamic rotation key
+    bool isDynamic() const {
+      return !getRotationIndex().has_value();
+    }
+
+    // Get the static rotation index (only valid if isStatic())
+    int64_t getStaticIndex() const {
+      assert(isStatic() && "Not a static rotation key");
+      return *getRotationIndex();
+    }
+  }];
 }
 
 #endif // LIB_DIALECT_KMRT_IR_KMRTTYPES_TD_

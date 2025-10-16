@@ -9,6 +9,7 @@
 #include "lib/Dialect/BGV/IR/BGVEnums.h"
 #include "lib/Dialect/CKKS/IR/CKKSAttributes.h"
 #include "lib/Dialect/CKKS/IR/CKKSDialect.h"
+#include "lib/Dialect/KMRT/IR/KMRTTypes.h"
 #include "lib/Dialect/LWE/IR/LWETypes.h"
 #include "lib/Dialect/Mgmt/IR/MgmtAttributes.h"
 #include "lib/Dialect/Mgmt/IR/MgmtDialect.h"
@@ -89,8 +90,10 @@ bool hasRelinOp(func::FuncOp op) {
 SmallVector<int64_t> findAllRotIndices(func::FuncOp op) {
   std::set<int64_t> distinctRotIndices;
   op.walk([&](openfhe::RotOp rotOp) {
-    distinctRotIndices.insert(
-        rotOp.getEvalKey().getType().getRotationIndex());
+    auto rotKeyType = cast<kmrt::RotKeyType>(rotOp.getEvalKey().getType());
+    if (rotKeyType.isStatic()) {
+      distinctRotIndices.insert(rotKeyType.getStaticIndex());
+    }
     return WalkResult::advance();
   });
   SmallVector<int64_t> rotIndicesResult(distinctRotIndices.begin(),
@@ -287,13 +290,17 @@ struct ConfigureCryptoContext
   SmallVector<int64_t> findAllRotIndices(func::FuncOp op) {
     std::set<int64_t> distinctRotIndices;
     op.walk([&](openfhe::RotOp rotOp) {
-      distinctRotIndices.insert(
-          rotOp.getEvalKey().getType().getRotationIndex());
+      auto rotKeyType = cast<kmrt::RotKeyType>(rotOp.getEvalKey().getType());
+      if (rotKeyType.isStatic()) {
+        distinctRotIndices.insert(rotKeyType.getStaticIndex());
+      }
       return WalkResult::advance();
     });
     op.walk([&](openfhe::RotInPlaceOp rotOp) {
-      distinctRotIndices.insert(
-          rotOp.getEvalKey().getType().getRotationIndex());
+      auto rotKeyType = cast<kmrt::RotKeyType>(rotOp.getEvalKey().getType());
+      if (rotKeyType.isStatic()) {
+        distinctRotIndices.insert(rotKeyType.getStaticIndex());
+      }
       return WalkResult::advance();
     });
     SmallVector<int64_t> rotIndicesResult(distinctRotIndices.begin(),

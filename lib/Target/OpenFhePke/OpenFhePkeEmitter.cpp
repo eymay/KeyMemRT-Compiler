@@ -690,8 +690,23 @@ LogicalResult OpenFhePkeEmitter::printOperation(LevelReduceOp op) {
 LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
   emitAutoAssignPrefix(op.getResult());
   os << variableNames->getNameForValue(op.getCryptoContext()) << "->EvalRotate("
-     << variableNames->getNameForValue(op.getCiphertext()) << ", "
-     << op.getEvalKey().getType().getRotationIndex() << ");\n";
+     << variableNames->getNameForValue(op.getCiphertext()) << ", ";
+
+  // Get rotation index - either from the type (static) or from the LoadKeyOp operand (dynamic)
+  auto evalKeyType = cast<kmrt::RotKeyType>(op.getEvalKey().getType());
+  if (evalKeyType.isStatic()) {
+    // Static rotation index baked into the type
+    os << evalKeyType.getStaticIndex();
+  } else {
+    // Dynamic rotation - get from the LoadKeyOp's operand
+    if (auto loadOp = op.getEvalKey().getDefiningOp<kmrt::LoadKeyOp>()) {
+      os << variableNames->getNameForValue(loadOp.getIndex());
+    } else {
+      return op.emitError("Dynamic rotation key must come from LoadKeyOp");
+    }
+  }
+
+  os << ");\n";
 
   emitLogRotWithSSA(op.getCiphertext());
   emitLogCTWithSSA(op.getResult());
@@ -728,12 +743,20 @@ LogicalResult OpenFhePkeEmitter::printOperation(kmrt::ClearKeyOp op) {
   auto rotKey = op.getRotKey();
   if (auto loadOp = rotKey.getDefiningOp<kmrt::LoadKeyOp>()) {
     auto indexValue = loadOp.getIndex();
+
+    os << "keymem_rt.clearKey(";
+
+    // Check if we have a constant index
     if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
       if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-        auto rotationIndex = intAttr.getInt();
-        os << "keymem_rt.clearKey(" << rotationIndex << ");\n";
+        os << intAttr.getInt();
       }
+    } else {
+      // Dynamic index - use the SSA variable name
+      os << variableNames->getNameForValue(indexValue);
     }
+
+    os << ");\n";
   }
   return success();
 }
@@ -741,19 +764,25 @@ LogicalResult OpenFhePkeEmitter::printOperation(kmrt::ClearKeyOp op) {
 LogicalResult OpenFhePkeEmitter::printOperation(kmrt::PrefetchKeyOp op) {
   // PrefetchKeyOp is the replacement for EnqueueKeyOp
   auto indexValue = op.getIndex();
+
+  os << "keymem_rt.enqueueKey(";
+
+  // Check if we have a constant index
   if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
     if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-      auto rotationIndex = intAttr.getInt();
-      os << "keymem_rt.enqueueKey(" << rotationIndex;
-
-      // Check if we have a depth attribute
-      if (auto depthAttr = op->getAttrOfType<IntegerAttr>("depth")) {
-        os << ", " << depthAttr.getInt();
-      }
-
-      os << ");\n";
+      os << intAttr.getInt();
     }
+  } else {
+    // Dynamic index - use the SSA variable name
+    os << variableNames->getNameForValue(indexValue);
   }
+
+  // Check if we have a depth attribute
+  if (auto depthAttr = op->getAttrOfType<IntegerAttr>("depth")) {
+    os << ", " << depthAttr.getInt();
+  }
+
+  os << ");\n";
   return success();
 }
 

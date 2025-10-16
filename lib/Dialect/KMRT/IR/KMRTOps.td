@@ -30,16 +30,42 @@ def KMRT_LoadKeyOp : Op<KMRT_Dialect, "load_key", [
   let summary = "Load a rotation key by index";
   let description = [{
     The load_key operation loads a rotation key identified by the given index
-    and returns it as a rot_key type. The returned rotation key will have
-    the same index as the input parameter.
-    
+    and returns it as a rot_key type.
+
+    The index operand can be:
+    - A constant value (e.g., from arith.constant) → produces static rot_key type
+    - An affine induction variable or computed index → produces dynamic rot_key type
+
+    The result type indicates whether this is a static or dynamic rotation:
+    - !kmrt.rot_key<rotation_index = N> for static constant N
+    - !kmrt.rot_key for dynamic (runtime-determined) indices
+
+    For dynamic rotation keys, analysis passes examine the index operand's
+    def-use chain to determine possible values (e.g., from affine loop bounds).
+
     This operation should typically be preceded by a prefetch_key operation
     with the same index, and followed by a clear_key operation on the result.
+
+    Examples:
+      // Static constant index
+      %c5 = arith.constant 5 : i64
+      %rk = kmrt.load_key %c5 : !kmrt.rot_key<rotation_index = 5>
+
+      // Dynamic index from affine loop
+      affine.for %iv = 1 to 16 {
+        %iv_i64 = arith.index_cast %iv : index to i64
+        %rk = kmrt.load_key %iv_i64 : !kmrt.rot_key
+      }
+
+      // Can also accept index type directly
+      affine.for %iv = 1 to 16 {
+        %rk = kmrt.load_key %iv : !kmrt.rot_key
+      }
   }];
-  
-  let arguments = (ins I64:$index);
+
+  let arguments = (ins AnyTypeOf<[Index, I64]>:$index);
   let results = (outs KMRT_RotKeyType:$rot_key);
-  let assemblyFormat = "$index attr-dict `:` type($rot_key)";
+  let assemblyFormat = "$index attr-dict `:` type($index) `->` type($rot_key)";
 }
 
 def KMRT_ClearKeyOp : Op<KMRT_Dialect, "clear_key", [

@@ -12,6 +12,7 @@
 #include "include/cereal/types/string.hpp"  // from @cereal
 #include "include/cereal/types/vector.hpp"  // from @cereal
 #include "lib/Analysis/SelectVariableNames/SelectVariableNames.h"
+#include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/LWE/IR/LWEOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "lib/Target/OpenFhePke/OpenFheUtils.h"
