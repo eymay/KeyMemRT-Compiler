@@ -11,6 +11,7 @@ cc_library(
     hdrs = ["SymbolicBSGSDecomposition.h"],
     deps = [
         ":pass_inc_gen",
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:FuncDialect",

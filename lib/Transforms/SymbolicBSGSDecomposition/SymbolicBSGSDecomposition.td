@@ -15,6 +15,7 @@ def SymbolicBSGSDecomposition : Pass<"symbolic-bsgs-decomposition", "func::FuncO
 
   }];
   let dependentDialects = [
+    "mlir::heir::kmrt::KMRTDialect",
     "mlir::heir::openfhe::OpenfheDialect",
     "mlir::affine::AffineDialect",
     "mlir::arith::ArithDialect"

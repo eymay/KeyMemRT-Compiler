@@ -21,6 +21,7 @@ cc_library(
         ":dialect_inc_gen",
         ":ops_inc_gen",
         ":types_inc_gen",
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
         "@heir//lib/Dialect/LWE/IR:Dialect",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
@@ -71,6 +72,7 @@ add_heir_dialect_library(
     td_file = "OpenfheOps.td",
     deps = [
         ":td_files",
+        "@heir//lib/Dialect/KMRT/IR:td_files",
         "@heir//lib/Dialect/LWE/IR:td_files",
     ],
 )

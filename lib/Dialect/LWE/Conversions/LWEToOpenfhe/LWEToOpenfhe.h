@@ -1,9 +1,11 @@
 #ifndef LIB_DIALECT_LWE_CONVERSIONS_LWETOOPENFHE_LWETOOPENFHE_H_
 #define LIB_DIALECT_LWE_CONVERSIONS_LWETOOPENFHE_LWETOOPENFHE_H_
 
+#include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/LWE/IR/LWEOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "lib/Utils/ConversionUtils.h"
+#include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinAttributes.h"     // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinTypes.h"          // from @llvm-project
@@ -108,14 +110,17 @@ struct ConvertRotateOp : public OpConversionPattern<RotateOp> {
     Value cryptoContext = result.value();
     Location loc = op.getLoc();
 
-    // First serialize the key with the rotation index
-    auto rotIndex = adaptor.getOffset();
+    // Get the rotation index
+    auto rotIndexAttr = adaptor.getOffset();
+    int64_t rotIndex = rotIndexAttr.getInt();
 
-    // Create the eval key
-    auto evalKeyType =
-        openfhe::EvalKeyType::get(rewriter.getContext(), rotIndex);
-    Value evalKey = rewriter.create<openfhe::DeserializeKeyOp>(
-        loc, evalKeyType, cryptoContext, rotIndex);
+    // Create a constant for the rotation index
+    Value rotIndexValue = rewriter.create<mlir::arith::ConstantOp>(
+        loc, rewriter.getI64Type(), rotIndexAttr);
+
+    // Create the eval key using KMRT load operation
+    auto rotKeyType = kmrt::RotKeyType::get(rewriter.getContext(), rotIndex);
+    Value evalKey = rewriter.create<kmrt::LoadKeyOp>(loc, rotKeyType, rotIndexValue);
 
     // Now we have the key, create the rotation op
     Value rotatedResult =
@@ -123,7 +128,7 @@ struct ConvertRotateOp : public OpConversionPattern<RotateOp> {
                                    adaptor.getInput(), evalKey);
 
     // Clear the key after use
-    rewriter.create<openfhe::ClearKeyOp>(loc, cryptoContext, evalKey);
+    rewriter.create<kmrt::ClearKeyOp>(loc, evalKey);
 
     rewriter.replaceOp(op, rotatedResult);
     return success();

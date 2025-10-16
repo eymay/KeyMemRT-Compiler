@@ -4,6 +4,7 @@
 include "OpenfheDialect.td"
 include "OpenfheTypes.td"
 
+include "lib/Dialect/KMRT/IR/KMRTTypes.td"
 include "lib/Dialect/LWE/IR/LWETypes.td"
 include "lib/Dialect/LWE/IR/LWETraits.td"
 include "mlir/IR/BuiltinAttributes.td"
@@ -302,7 +303,7 @@ def RotOp : Openfhe_Op<"rot",[
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
     NewLWECiphertext:$ciphertext,
-    Openfhe_EvalKey:$evalKey
+    KMRT_RotKeyType:$evalKey
   );
   let results = (outs NewLWECiphertext:$output);
 }
@@ -314,7 +315,7 @@ def AutomorphOp : Openfhe_Op<"automorph", [
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
     NewLWECiphertext:$ciphertext,
-    Openfhe_EvalKey:$evalKey
+    KMRT_RotKeyType:$evalKey
   );
   let results = (outs NewLWECiphertext:$output);
 }
@@ -326,156 +327,13 @@ def KeySwitchOp : Openfhe_Op<"key_switch", [
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
     NewLWECiphertext:$ciphertext,
-    Openfhe_EvalKey:$evalKey
+    KMRT_RotKeyType:$evalKey
   );
   let results = (outs NewLWECiphertext:$output);
 }
 
 def BootstrapOp : Openfhe_UnaryTypeSwitchOp<"bootstrap"> { let summary = "OpenFHE bootstrap operation of a ciphertext. (For CKKS)"; }
 
-def DeserializeKeyOp : Openfhe_Op<"deserialize_key"> {
-  let summary = "Deserialize a previously serialized rotation key";
-  let description = [{
-    Takes a serialized evaluation key and deserializes it back into the context.
-    This operation just loads the key from a file into context memory.
-
-    Example:
-    ```mlir
-    openfhe.deserialize_key %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key
-    ```
-  }];
-
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    Builtin_IntegerAttr:$index
-  );
-  let results = (outs Openfhe_EvalKey:$evalKey);
-}
-
-def DeserializeKeyDynamicOp : Openfhe_Op<"deserialize_key_dynamic"> {
-  let summary = "Deserialize a previously serialized rotation key";
-  let description = [{
-    Takes a serialized evaluation key and deserializes it back into the context.
-    This operation just loads the key from a file into context memory.
-
-    Example:
-    ```mlir
-    openfhe.deserialize_key_dynamic %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key
-    ```
-  }];
-
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    I32:$index
-  );
-  let results = (outs Openfhe_EvalKey:$evalKey);
-}
-
-def EnqueueKeyOp : Openfhe_Op<"enqueue_key"> {
-  let summary = "Enqueue a key for prefetching";
-  let description = [{
-    Provides a hint to the runtime about when a key will be needed for prefetching.
-    This operation corresponds exactly to a deserialize_key operation and uses the
-    same index and optional depth attributes.
-
-    Example:
-    ```mlir
-    openfhe.enqueue_key %cc, 5 : !openfhe.crypto_context, index
-    openfhe.enqueue_key %cc, 3 {depth = 2 : i64} : !openfhe.crypto_context, index
-    ```
-  }];
-
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    Builtin_IntegerAttr:$index,
-    OptionalAttr<Builtin_IntegerAttr>:$depth
-  );
-  
-  let results = (outs);
-}
-
-def EnqueueKeyDynamicOp : Openfhe_Op<"enqueue_key_dynamic"> {
-  let summary = "Enqueue a key for prefetching";
-  let description = [{
-    Provides a hint to the runtime about when a key will be needed for prefetching.
-    This operation corresponds exactly to a deserialize_key operation and uses the
-    same index and optional depth attributes.
-
-    Example:
-    ```mlir
-    openfhe.enqueue_key %cc, 5 : !openfhe.crypto_context, index
-    openfhe.enqueue_key %cc, 3 {depth = 2 : i64} : !openfhe.crypto_context, index
-    ```
-  }];
-
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    I32:$index,
-    OptionalAttr<Builtin_IntegerAttr>:$depth
-  );
-  
-  let results = (outs);
-}
-
-def SerializeKeyOp : Openfhe_Op<"serialize_key"> {
-  let summary = "Serialize a rotation key for a given rotation index";
-  let description = [{
-    Serializes a rotation key for a given rotation index, returning an evaluation key
-    that encapsulates both the key data and the rotation amount.
-
-    Example:
-    ```mlir
-    %ek = openfhe.serialize_key %cc, 1 : !openfhe.crypto_context -> !openfhe.eval_key
-    %rotated = openfhe.rot %cc, %ct, %ek : !openfhe.crypto_context, !openfhe.lwe_ciphertext, !openfhe.eval_key -> !openfhe.lwe_ciphertext
-    ```
-  }];
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    Openfhe_EvalKey:$evalKey
-  );
-}
-
-def ClearKeyOp : Openfhe_Op<"clear_key"> {
-  let summary = "Clear a rotation key from memory";
-  let description = [{
-    Takes an evaluation key and clears it from the context memory.
-    This helps manage memory usage by removing keys when they're no longer needed.
-
-    Example:
-    ```mlir
-    openfhe.clear_key %cc, %ek : !openfhe.crypto_context, !openfhe.eval_key
-    ```
-  }];
-
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    Openfhe_EvalKey:$evalKey
-  );
-}
-
-def CompressKeyOp : Openfhe_Op<"compress_key"> {
-  let summary = "Compress a rotation key to reduce memory usage";
-  let description = [{
-    Takes an evaluation key and compresses it to a specified depth to reduce memory usage, 
-    returning the compressed key which can still be used in operations. The compressed key 
-    maintains the same rotation index as the original key but with reduced depth.
-    
-    Example:
-    ```mlir
-    %compressed_ek = openfhe.compress_key %cc, %ek { depth = 5 } : !openfhe.crypto_context, !openfhe.eval_key -> !openfhe.eval_key
-    ```
-  }];
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    Openfhe_EvalKey:$evalKey,
-    I32Attr:$depth
-  );
-  let results = (outs Openfhe_EvalKey:$resultKey);
-  
-  let assemblyFormat = [{
-    $cryptoContext `,` $evalKey attr-dict `:` type($cryptoContext) `,` type($evalKey) `->` type($resultKey)
-  }];
-}
 
 // In-Place Plaintext Operations
 def AddPlainInPlaceOp : Openfhe_Op<"add_plain_inplace"> {
@@ -548,7 +406,7 @@ def RotInPlaceOp : Openfhe_Op<"rot_inplace"> {
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
     NewLWECiphertext:$ciphertext,
-    Openfhe_EvalKey:$evalKey
+    KMRT_RotKeyType:$evalKey
   );
 }
 
@@ -707,28 +565,6 @@ def RotateGlobalOp : Openfhe_Op<"rotate_global", [
   }];
 }
 
-def ClearKeyGlobalOp : Openfhe_Op<"clear_key_global"> {
-  let summary = "Clear a rotation key from global storage";
-  let description = [{
-    This operation clears a rotation key from the crypto context's global storage.
-    The key is identified by its rotation index. This helps manage memory usage
-    by removing keys when they're no longer needed.
-
-    Example:
-    ```mlir
-    openfhe.clear_key_global %cc, 1 : !openfhe.crypto_context
-    ```
-  }];
-
-  let arguments = (ins
-    Openfhe_CryptoContext:$cryptoContext,
-    Builtin_IntegerAttr:$index
-  );
-
-  let assemblyFormat = [{
-    $cryptoContext `,` $index attr-dict `:` type($cryptoContext)
-  }];
-}
 
 def Openfhe_LinearTransformOp : Openfhe_Op<"linear_transform"> {
   let summary = "Linear transformation operation using diagonal method";

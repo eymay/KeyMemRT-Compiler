@@ -19,6 +19,7 @@
 #include "lib/Dialect/HEIRInterfaces.h"
 #include "lib/Dialect/Jaxite/IR/JaxiteDialect.h"
 #include "lib/Dialect/JaxiteWord/IR/JaxiteWordDialect.h"
+#include "lib/Dialect/KMRT/IR/KMRTDialect.h"
 #include "lib/Dialect/LWE/Conversions/LWEToLattigo/LWEToLattigo.h"
 #include "lib/Dialect/LWE/Conversions/LWEToOpenfhe/LWEToOpenfhe.h"
 #include "lib/Dialect/LWE/Conversions/LWEToPolynomial/LWEToPolynomial.h"
@@ -58,7 +59,7 @@
 #include "lib/Transforms/AnnotateModule/AnnotateModule.h"
 #include "lib/Transforms/AnnotateSecretness/AnnotateSecretness.h"
 #include "lib/Transforms/ApplyFolders/ApplyFolders.h"
-#include "lib/Transforms/BootstrapRotationAnalysis/BootstrapRotationAnalysis.h"
+// #include "lib/Transforms/BootstrapRotationAnalysis/BootstrapRotationAnalysis.h"  // Uses old openfhe ops
 #include "lib/Transforms/ConvertIfToSelect/ConvertIfToSelect.h"
 #include "lib/Transforms/ConvertSecretExtractToStaticExtract/ConvertSecretExtractToStaticExtract.h"
 #include "lib/Transforms/ConvertSecretForToStaticFor/ConvertSecretForToStaticFor.h"
@@ -72,14 +73,14 @@
 #include "lib/Transforms/ForwardStoreToLoad/ForwardStoreToLoad.h"
 #include "lib/Transforms/FullLoopUnroll/FullLoopUnroll.h"
 #include "lib/Transforms/GenerateParam/GenerateParam.h"
-#include "lib/Transforms/KeyCompression/KeyCompression.h"
+// #include "lib/Transforms/KeyCompression/KeyCompression.h"  // Uses old openfhe ops
 #include "lib/Transforms/LayoutOptimization/LayoutOptimization.h"
 #include "lib/Transforms/LayoutPropagation/LayoutPropagation.h"
 #include "lib/Transforms/LinalgCanonicalizations/LinalgCanonicalizations.h"
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 #include "lib/Transforms/LowerPolynomialEval/LowerPolynomialEval.h"
-#include "lib/Transforms/MemoryEstimation/MemoryEstimation.h"
-#include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h"
+// #include "lib/Transforms/MemoryEstimation/MemoryEstimation.h"  // Uses old openfhe ops
+// #include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h"  // Uses old openfhe ops
 #include "lib/Transforms/OperationBalancer/OperationBalancer.h"
 #include "lib/Transforms/OptimizeRelinearization/OptimizeRelinearization.h"
 #include "lib/Transforms/PolynomialApproximation/PolynomialApproximation.h"
@@ -164,6 +165,7 @@ int main(int argc, char **argv) {
   registry.insert<comb::CombDialect>();
   registry.insert<jaxite::JaxiteDialect>();
   registry.insert<jaxiteword::JaxiteWordDialect>();
+  registry.insert<kmrt::KMRTDialect>();
   registry.insert<lattigo::LattigoDialect>();
   registry.insert<lwe::LWEDialect>();
   registry.insert<mgmt::MgmtDialect>();
@@ -291,15 +293,15 @@ int main(int argc, char **argv) {
   registerLowerPolynomialEvalPasses();
   registerTensorToScalarsPasses();
   registerTensorLinalgToAffineLoops();
-  registerMergeEvalKeysPasses();
-  registerRotationDecomposePasses();
-  registerRotationDepthAnalysisPasses();
-  registerKeyCompressionPasses();
+  // registerMergeEvalKeysPasses();  // Uses old openfhe ops
+  // registerRotationDecomposePasses();  // Uses old openfhe ops
+  // registerRotationDepthAnalysisPasses();  // Uses old openfhe ops
+  // registerKeyCompressionPasses();  // Uses old openfhe ops
   registerLowerLinearTransformPasses();
-  registerBootstrapRotationAnalysisPasses();
+  // registerBootstrapRotationAnalysisPasses();  // Uses old openfhe ops
   registerFHEFunctionOutliningPasses();
   registerProfileAnnotatorPasses();
-  registerMemoryEstimationPasses();
+  // registerMemoryEstimationPasses();  // Uses old openfhe ops
   registerSymbolicBSGSDecompositionPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS

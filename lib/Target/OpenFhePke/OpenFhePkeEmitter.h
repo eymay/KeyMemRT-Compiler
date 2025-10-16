@@ -136,10 +136,9 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(NegateOp op);
   LogicalResult printOperation(RelinOp op);
   LogicalResult printOperation(RotOp op);
-  LogicalResult printOperation(SerializeKeyOp op);
-  LogicalResult printOperation(DeserializeKeyOp op);
-  LogicalResult printOperation(ClearKeyOp op);
-  LogicalResult printOperation(CompressKeyOp op);
+  LogicalResult printOperation(kmrt::LoadKeyOp op);
+  LogicalResult printOperation(kmrt::ClearKeyOp op);
+  LogicalResult printOperation(kmrt::PrefetchKeyOp op);
   LogicalResult printOperation(SetupBootstrapOp op);
   LogicalResult printOperation(SquareOp op);
   LogicalResult printOperation(SubOp op);
@@ -155,11 +154,8 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(MulInPlaceOp op);
   LogicalResult printOperation(MulPlainInPlaceOp op);
   LogicalResult printOperation(ClearCtOp op);
+  LogicalResult printOperation(ClearPtOp op);
   LogicalResult printOperation(ChebyshevOp op);
-  LogicalResult printOperation(DeserializeGlobalKeyOp op);
-  LogicalResult printOperation(RotateGlobalOp op);
-  LogicalResult printOperation(ClearKeyGlobalOp op);
-
   void streamSSAName(::mlir::Value value);
   void emitLogCTWithSSA(::mlir::Value value);
   // Helpers for above

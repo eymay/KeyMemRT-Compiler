@@ -13,6 +13,7 @@ cc_library(
     ],
     deps = [
         ":pass_inc_gen",
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
         "@heir//lib/Dialect/LWE/IR:Dialect",
         "@heir//lib/Dialect/Polynomial/IR:Dialect",

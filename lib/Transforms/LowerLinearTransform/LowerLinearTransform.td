@@ -47,6 +47,7 @@ def LowerLinearTransform : Pass<"lower-linear-transform", "func::FuncOp"> {
   let dependentDialects = [
     "mlir::heir::openfhe::OpenfheDialect",
     "mlir::heir::lwe::LWEDialect",
+    "mlir::heir::kmrt::KMRTDialect",
     "mlir::arith::ArithDialect",
     "mlir::tensor::TensorDialect",
     "mlir::affine::AffineDialect"

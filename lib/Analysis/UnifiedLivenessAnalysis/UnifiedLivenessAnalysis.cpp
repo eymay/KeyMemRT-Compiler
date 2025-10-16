@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/LWE/IR/LWETypes.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "llvm/include/llvm/ADT/TypeSwitch.h"           // from @llvm-project

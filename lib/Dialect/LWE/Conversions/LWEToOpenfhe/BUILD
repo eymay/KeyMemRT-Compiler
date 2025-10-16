@@ -15,6 +15,7 @@ cc_library(
         ":pass_inc_gen",
         "@heir//lib/Dialect/BGV/IR:Dialect",
         "@heir//lib/Dialect/CKKS/IR:Dialect",
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
         "@heir//lib/Dialect/LWE/IR:Dialect",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
         "@heir//lib/Utils",

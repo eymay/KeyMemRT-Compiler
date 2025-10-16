@@ -2,6 +2,7 @@
 
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 
+#include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/LWE/IR/LWEAttributes.h"
 #include "lib/Dialect/LWE/IR/LWEOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheDialect.h"
@@ -208,24 +209,22 @@ class LowerLinearTransformPattern
       llvm::dbgs() << "Processing diagonal " << i << "\n";
 
       Value rotatedInput = inputCiphertext;
-      Value evalKey = nullptr;
+      Value rotKey = nullptr;
 
       if (i > 0) {
         // Step 1a: Deserialize the rotation key
-        auto evalKeyType = openfhe::EvalKeyType::get(rewriter.getContext(),
-                                                     rewriter.getIndexAttr(i));
+        auto rotKeyType = kmrt::RotKeyType::get(rewriter.getContext(), i);
 
-        evalKey = rewriter.create<openfhe::DeserializeKeyOp>(loc, evalKeyType,
-                                                             cryptoContext);
-        evalKey.getDefiningOp()->setAttr("index", rewriter.getIndexAttr(i));
+        rotKey =
+            rewriter.create<kmrt::LoadKeyOp>(loc, rotKeyType, cryptoContext);
 
         // Step 1b: Perform rotation
         rotatedInput = rewriter.create<openfhe::RotOp>(
             loc, inputCiphertext.getType(), cryptoContext, inputCiphertext,
-            evalKey);
+            rotKey);
 
         // Step 1c: Clear the rotation key immediately after use
-        rewriter.create<openfhe::ClearKeyOp>(loc, cryptoContext, evalKey);
+        rewriter.create<kmrt::ClearKeyOp>(loc, rotKey);
       }
 
       // Step 2: Extract and encode diagonal
@@ -304,23 +303,22 @@ class LowerLinearTransformPattern
           auto ivIndex = builder.create<affine::AffineApplyOp>(
               loc, AffineMap::get(1, 0, builder.getAffineDimExpr(0)),
               ValueRange{iv});
-          auto ivI32 = builder.create<arith::IndexCastOp>(
-              loc, builder.getI32Type(), ivIndex);
+          auto ivI64 = builder.create<arith::IndexCastOp>(
+              loc, builder.getI64Type(), ivIndex);
 
           // Step 1a: Deserialize rotation key
-          auto evalKeyType = openfhe::EvalKeyType::get(builder.getContext(),
-                                                       builder.getIndexAttr(0));
+          auto rotKeyType = kmrt::RotKeyType::get(builder.getContext(), 0);
 
-          Value evalKey = builder.create<openfhe::DeserializeKeyDynamicOp>(
-              loc, evalKeyType, cryptoContext, ivI32);
+          Value rotKey =
+              builder.create<kmrt::LoadKeyOp>(loc, rotKeyType, ivI64);
 
           // Step 1b: Rotate input by i
           Value rotatedInput = builder.create<openfhe::RotOp>(
               loc, inputCiphertext.getType(), cryptoContext, inputCiphertext,
-              evalKey);
+              rotKey);
 
           // Step 1c: Clear the rotation key immediately after rotation
-          builder.create<openfhe::ClearKeyOp>(loc, cryptoContext, evalKey);
+          builder.create<kmrt::ClearKeyOp>(loc, rotKey);
 
           // Step 2: Extract diagonal i from weight matrix
           auto slotType = builder.getF64Type();

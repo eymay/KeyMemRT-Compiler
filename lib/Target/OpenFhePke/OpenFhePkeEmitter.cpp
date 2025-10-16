@@ -265,11 +265,13 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           // LWE ops
           .Case<lwe::RLWEDecodeOp, lwe::ReinterpretApplicationDataOp>(
               [&](auto op) { return printOperation(op); })
+          // KMRT ops
+          .Case<kmrt::LoadKeyOp, kmrt::ClearKeyOp, kmrt::PrefetchKeyOp>(
+              [&](auto op) { return printOperation(op); })
           // OpenFHE ops
           .Case<AddOp, AddPlainOp, SubOp, SubPlainOp, MulNoRelinOp, MulOp,
                 MulPlainOp, SquareOp, NegateOp, MulConstOp, RelinOp,
-                ModReduceOp, LevelReduceOp, RotOp, DeserializeKeyOp,
-                SerializeKeyOp, ClearKeyOp, CompressKeyOp, ClearCtOp,
+                ModReduceOp, LevelReduceOp, RotOp, ClearCtOp, ClearPtOp,
                 AutomorphOp, KeySwitchOp, EncryptOp, DecryptOp, GenParamsOp,
                 GenContextOp, GenMulKeyOp, GenRotKeyOp, GenRotKeyDepthOp,
                 GenBootstrapKeyOp, MakePackedPlaintextOp,
@@ -543,7 +545,8 @@ void OpenFhePkeEmitter::emitAutoAssignPrefix(Value result) {
   // assign prefix.
   if (!mutableValues.contains(result)) {
     // Check if this is a ciphertext type that might need to be mutable
-    if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(
+    if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType,
+            lwe::NewLWEPlaintextType, lwe::LWEPlaintextType>(
             result.getType())) {
       // For ciphertext types, use auto instead of const auto& to allow in-place
       // operations
@@ -583,6 +586,12 @@ void OpenFhePkeEmitter::emitLogCTWithSSA(::mlir::Value result) {
   os << "\");\n";
 }
 
+void OpenFhePkeEmitter::emitLogRotWithSSA(::mlir::Value result) {
+  os << "LOG_ROT(" << variableNames->getNameForValue(result) << ",\"";
+  streamSSAName(result);
+  os << "\");\n";
+}
+
 LogicalResult OpenFhePkeEmitter::printEvalMethod(
     ::mlir::Value result, ::mlir::Value cryptoContext,
     ::mlir::ValueRange nonEvalOperands, std::string_view op) {
@@ -593,7 +602,7 @@ LogicalResult OpenFhePkeEmitter::printEvalMethod(
     return variableNames->getNameForValue(value);
   });
   os << ");\n";
-  // emitLogCTWithSSA(result);
+  emitLogCTWithSSA(result);
   return success();
 }
 
@@ -682,61 +691,69 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
   emitAutoAssignPrefix(op.getResult());
   os << variableNames->getNameForValue(op.getCryptoContext()) << "->EvalRotate("
      << variableNames->getNameForValue(op.getCiphertext()) << ", "
-     << op.getEvalKey().getType().getRotationIndex().getInt() << ");\n";
-  // os << "LOG_CT(" << variableNames->getNameForValue(op.getResult()) <<
-  // ");\n";
+     << op.getEvalKey().getType().getRotationIndex() << ");\n";
 
-  emitLogCTWithSSA(op.getCiphertext());
+  emitLogRotWithSSA(op.getCiphertext());
+  emitLogCTWithSSA(op.getResult());
   return success();
 }
 
-LogicalResult OpenFhePkeEmitter::printOperation(SerializeKeyOp op) {
-  // Get the rotation index from the integer attribute
-  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
-  auto contextName = variableNames->getNameForValue(op.getCryptoContext());
-  auto evalKeyName = variableNames->getNameForValue(op.getEvalKey());
+// KMRT ops implementations
+LogicalResult OpenFhePkeEmitter::printOperation(kmrt::LoadKeyOp op) {
+  // Get rotation index from the operation's index operand
+  auto indexValue = op.getIndex();
+  if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+      auto rotationIndex = intAttr.getInt();
 
-  os << "keymem_rt.serializeKey(" << rotationIndex << ");\n";
-
-  return success();
-}
-
-LogicalResult OpenFhePkeEmitter::printOperation(DeserializeKeyOp op) {
-  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
-
-  // Check if we have a key_depth attribute
-  if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
-    int64_t depth = depthAttr.getInt();
-    if (depth > 0) {
-      // If depth > 0, pass it as an argument
-      os << "keymem_rt.deserializeKey(" << rotationIndex << ", " << depth
-         << ");\n";
-    } else {
-      // If depth = 0, use the normal call
-      os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+      // Check if we have a key_depth attribute
+      if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
+        int64_t depth = depthAttr.getInt();
+        if (depth > 0) {
+          os << "keymem_rt.deserializeKey(" << rotationIndex << ", " << depth
+             << ");\n";
+        } else {
+          os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+        }
+      } else {
+        os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
+      }
     }
-  } else {
-    // Default to normal call if no depth attribute
-    os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
   }
-
-  return success();
-}
-LogicalResult OpenFhePkeEmitter::printOperation(ClearKeyOp op) {
-  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
-  // auto contextName = variableNames->getNameForValue(op.getCryptoContext());
-
-  os << "keymem_rt.clearKey(" << rotationIndex << ");\n";
   return success();
 }
 
-LogicalResult OpenFhePkeEmitter::printOperation(CompressKeyOp op) {
-  auto evalKeyName = variableNames->getNameForValue(op.getEvalKey());
-  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
-  auto depthAttr = op->getAttrOfType<IntegerAttr>("depth");
+LogicalResult OpenFhePkeEmitter::printOperation(kmrt::ClearKeyOp op) {
+  // Get the rotation key that's being cleared
+  auto rotKey = op.getRotKey();
+  if (auto loadOp = rotKey.getDefiningOp<kmrt::LoadKeyOp>()) {
+    auto indexValue = loadOp.getIndex();
+    if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+        auto rotationIndex = intAttr.getInt();
+        os << "keymem_rt.clearKey(" << rotationIndex << ");\n";
+      }
+    }
+  }
+  return success();
+}
 
-  os << "keymem_rt.compressKey(" << rotationIndex << "," << depthAttr.getInt()
-     << ");\n";
+LogicalResult OpenFhePkeEmitter::printOperation(kmrt::PrefetchKeyOp op) {
+  // PrefetchKeyOp is the replacement for EnqueueKeyOp
+  auto indexValue = op.getIndex();
+  if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+      auto rotationIndex = intAttr.getInt();
+      os << "keymem_rt.enqueueKey(" << rotationIndex;
+
+      // Check if we have a depth attribute
+      if (auto depthAttr = op->getAttrOfType<IntegerAttr>("depth")) {
+        os << ", " << depthAttr.getInt();
+      }
+
+      os << ");\n";
+    }
+  }
   return success();
 }
 
@@ -782,7 +799,8 @@ LogicalResult OpenFhePkeEmitter::printOperation(BootstrapOp op) {
     return variableNames->getNameForValue(value);
   });
   os << ");\n";
-  emitLogCTWithSSA(op.getCiphertext());
+  emitLogRotWithSSA(op.getCiphertext());
+  emitLogCTWithSSA(op.getResult());
   return success();
 }
 
@@ -1317,21 +1335,30 @@ LogicalResult OpenFhePkeEmitter::printOperation(
   if (failed(resultCC)) return resultCC;
   std::string cc = variableNames->getNameForValue(resultCC.value());
 
+  // Use immediately-invoked lambda with proper captures
+  emitAutoAssignPrefix(op.getResult());
+  os << "[&" << cc << ", &" << inputVarName
+     << "]() {\n";  // Capture by reference
+
   // cyclic repetition to mitigate openfhe zero-padding (#645)
-  os << "auto " << inputVarFilledLengthName << " = " << cc
+  os << "  auto " << inputVarFilledLengthName << " = " << cc
      << "->GetCryptoParameters()->GetElementParams()->GetRingDimension() / "
         "2;\n";
-  os << "auto " << inputVarFilledName << " = " << inputVarName << ";\n";
-  os << inputVarFilledName << ".clear();\n";
-  os << inputVarFilledName << ".reserve(" << inputVarFilledLengthName << ");\n";
-  os << "for (auto i = 0; i < " << inputVarFilledLengthName << "; ++i) {\n";
-  os << "  " << inputVarFilledName << ".push_back(" << inputVarName << "[i % "
+  os << "  auto " << inputVarFilledName << " = " << inputVarName << ";\n";
+  os << "  " << inputVarFilledName << ".clear();\n";
+  os << "  " << inputVarFilledName << ".reserve(" << inputVarFilledLengthName
+     << ");\n";
+  os << "  for (auto i = 0; i < " << inputVarFilledLengthName << "; ++i) {\n";
+  os << "    " << inputVarFilledName << ".push_back(" << inputVarName << "[i % "
      << inputVarName << ".size()]);\n";
-  os << "}\n";
+  os << "  }\n";
 
-  emitAutoAssignPrefix(op.getResult());
-  os << variableNames->getNameForValue(resultCC.value())
-     << "->MakeCKKSPackedPlaintext(" << inputVarFilledName << ");\n";
+  // Return the plaintext from the lambda
+  os << "  return " << cc << "->MakeCKKSPackedPlaintext(" << inputVarFilledName
+     << ");\n";
+
+  os << "}();\n";  // End lambda and call it immediately
+
   return success();
 }
 
@@ -1532,31 +1559,50 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenRotKeyOp op) {
   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
   auto privateKeyName = variableNames->getNameForValue(op.getPrivateKey());
 
+  bool bootstrapEnabled = false;
+  if (auto bootstrapAttr = op->getAttrOfType<BoolAttr>("bootstrap_enabled"))
+    bootstrapEnabled = bootstrapAttr.getValue();
+
   os << "  const std::vector<int32_t> rotIndices = {";
   llvm::interleaveComma(op.getIndices(), os,
                         [&](int64_t value) { os << value; });
   os << "};\n\n";
   if (printKeyMemRTConfig(os, contextName, privateKeyName).failed())
     return failure();
-  os << " if(keymem_rt.getPlatform() == Platform::SERVER)\n";
-  os << "   return cc;\n";
+  os << "keymem_rt.addRotIndices(rotIndices);\n";
+  os << "if(keymem_rt.getPlatform() == Platform::CLIENT){\n";
   os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
-     << ", rotIndices);\n\n";
-  bool bootstrapEnabled = false;
-  if (auto bootstrapAttr = op->getAttrOfType<BoolAttr>("bootstrap_enabled"))
-    bootstrapEnabled = bootstrapAttr.getValue();
-
+     << ", rotIndices);\n";
+  os << "  switch (keymem_rt.getOperationMode()) {\n"
+     << "    case KeyMemMode::IGNORE:{\n";
   if (!bootstrapEnabled) {
-    os << "keymem_rt.addRotIndices(rotIndices);\n";
-    os << "if (!keymem_rt.serializeAllKeys()) {\n";
-    os << "  std::cerr << \"Failed to serialize rotation keys\" << "
+    os << "    if (!keymem_rt.serializeAllKeys())\n"
+       << "      std::cerr << \" Failed to serialize rotation keys \" << "
           "std::endl;\n";
-    os << "}\n";
-    os << "keymem_rt.clearAllKeys();\n";
-    os << "keymem_rt.deserializeKey(1);\n";
-    os << "keymem_rt.generateConjugateKey(sk);\n";
-    os << "keymem_rt.clearKey(1);\n";
+    os << "    keymem_rt.clearAllKeys();\n";
+  } else {
+    os << " break;\n";
   }
+  os << "}\n"
+     << "    case KeyMemMode::IMPERATIVE:\n"
+     << "    case KeyMemMode::PREFETCH: {\n"
+     << "    if (!keymem_rt.serializeKeysAtLevel(rotIndices, 0))\n"
+     << "      std::cerr << \" Failed to serialize rotation keys \" << "
+        "std::endl;\n";
+  os << "    keymem_rt.clearAllKeys();\n";
+  os << "    }\n";
+  os << "  }\n";
+  os << "}\n";
+
+  // if (!bootstrapEnabled) {
+  //   os << "if(keymem_rt.getPlatform() == Platform::CLIENT){\n";
+  //   os << "  if (!keymem_rt.serializeAllKeys(false)) {\n";
+  //   os << "    std::cerr << \"Failed to serialize rotation keys\" << "
+  //         "  std::endl;\n";
+  //   os << "  }\n";
+  //   os << "keymem_rt.clearAllKeys();\n";
+  //   os << "}\n";
+  // }
   return success();
 }
 
@@ -1588,6 +1634,9 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::GenRotKeyDepthOp op) {
   }
   os << "};\n";
 
+  os << "keymem_rt.addRotIndices(rotIndices_depth_" << depth << ");\n";
+
+  os << "if(keymem_rt.getPlatform() == Platform::CLIENT){\n";
   os << "  std::cout << \"Generating keys at depth " << depth
      << "\" << std::endl;\n";
   os << "  " << contextName << "->EvalRotateKeyGen(" << privateKeyName
@@ -1601,8 +1650,8 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::GenRotKeyDepthOp op) {
   os << "    std::cerr << \"Failed to serialize rotation keys at depth "
      << depth << "\" << std::endl;\n";
   os << "  }\n";
-  os << "keymem_rt.addRotIndices(rotIndices_depth_" << depth << ");\n";
-  os << "  " << contextName << "->ClearEvalAutomorphismKeys();\n\n";
+  os << "  keymem_rt.clearAllKeys();\n";
+  os << "}\n";
 
   return success();
 }
@@ -1616,7 +1665,16 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenBootstrapKeyOp op) {
       bootstrapIndices.push_back(attr.getInt());
     }
   }
-  if (bootstrapIndices.empty()) return failure();
+  if (bootstrapIndices.empty()) {
+    os << "  auto numSlots = " << contextName << "->GetRingDimension() / 2;\n";
+    os << contextName << "->EvalBootstrapKeyGen(" << privateKeyName
+       << ", numSlots);\n";
+    os << "if(keymem_rt.getPlatform() == Platform::CLIENT)\n";
+    os << "  if (!keymem_rt.serializeAllKeys(true))\n";
+    os << "    std::cerr << \"Failed to serialize rotation keys\" << "
+          "  std::endl;\n";
+    return success();
+  };
   os << "  const std::vector<int32_t> bootstrapRotIndices = {";
   llvm::interleaveComma(bootstrapIndices, os,
                         [&](int32_t value) { os << value; });
@@ -1624,20 +1682,37 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenBootstrapKeyOp op) {
 
   os << "// Update keymem_rt with merged indices\n";
   os << "keymem_rt.addRotIndices(bootstrapRotIndices);\n\n";
-
-  // compiler can not determine slot num for now
-  // full packing for CKKS, as we currently always full packing
-  os << "auto numSlots = " << contextName << "->GetRingDimension() / 2;\n";
-  os << contextName << "->EvalBootstrapKeyGen(" << privateKeyName
+  os << "if(keymem_rt.getPlatform() == Platform::CLIENT){\n";
+  os << "  auto numSlots = " << contextName << "->GetRingDimension() / 2;\n";
+  os << "  " << contextName << "->EvalBootstrapKeyGen(" << privateKeyName
      << ", numSlots);\n";
-  os << "  if (!keymem_rt.serializeAllKeys()) {\n";
-  os << "    std::cerr << \"Failed to serialize rotation keys\" << "
+  os << "  switch (keymem_rt.getOperationMode()) {\n"
+     << "    case KeyMemMode::IGNORE: {\n";
+  os << "      if (!keymem_rt.serializeAllKeys(true))\n";
+  os << "        std::cerr << \"Failed to serialize rotation keys\" << "
+        "  std::endl;\n";
+  os << "    }\n";
+  os << "    case KeyMemMode::IMPERATIVE:\n"
+     << "    case KeyMemMode::PREFETCH: {\n"
+     << "    if (!keymem_rt.serializeKeysAtLevel(bootstrapRotIndices, 0))\n"
+     << "      std::cerr << \" Failed to serialize bootstrap rotation keys \" "
+        "<< "
         "std::endl;\n";
+  os << "    }\n";
   os << "  }\n";
   os << "  keymem_rt.clearAllKeys();\n";
-  os << "keymem_rt.deserializeKey(1);\n";
-  os << "keymem_rt.generateConjugateKey(sk);\n";
-  os << "keymem_rt.clearKey(1);\n";
+  os << "} else if(keymem_rt.getPlatform() == Platform::SERVER) {\n";
+  os << "  switch (keymem_rt.getOperationMode()) {\n"
+     << "    case KeyMemMode::IGNORE:\n"
+     << "      break;\n"
+     << "    case KeyMemMode::IMPERATIVE:\n"
+     << "    case KeyMemMode::PREFETCH: {\n"
+     << "      keymem_rt.deserializeKey(1);\n";
+  os << "      keymem_rt.generateConjugateKey(sk);\n";
+  os << "      keymem_rt.clearKey(1);\n";
+  os << "      }\n";
+  os << "    }\n";
+  os << "}\n";
   return success();
 }
 
@@ -1708,7 +1783,7 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotInPlaceOp op) {
   // Emit self-assignment: ciphertext = cc->EvalRotate(ciphertext, index);
   auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
-  auto rotationIndex = op.getEvalKey().getType().getRotationIndex().getInt();
+  auto rotationIndex = op.getEvalKey().getType().getRotationIndex();
 
   os << ciphertextName << " = " << contextName << "->EvalRotate("
      << ciphertextName << ", " << rotationIndex << ");\n";
@@ -1751,6 +1826,14 @@ LogicalResult OpenFhePkeEmitter::printOperation(ClearCtOp op) {
   return success();
 }
 
+LogicalResult OpenFhePkeEmitter::printOperation(ClearPtOp op) {
+  auto plaintextName = variableNames->getNameForValue(op.getPlaintext());
+
+  os << plaintextName << ".reset();\n";
+
+  return success();
+}
+
 LogicalResult OpenFhePkeEmitter::printOperation(openfhe::ChebyshevOp op) {
   auto cryptoContext = op.getCryptoContext();
   auto input = op.getInput();
@@ -1788,53 +1871,9 @@ LogicalResult OpenFhePkeEmitter::printOperation(openfhe::ChebyshevOp op) {
      << "->EvalChebyshevSeries(" << inputName << ", coeffs_" << outputName
      << ", " << a << ", " << b << ");\n";
 
-  // os << "LOG_CT(" << outputName << ");\n";
-
-  // emitLogCTWithSSA(op.getOutput());
+  emitLogCTWithSSA(op.getOutput());
   return success();
 }
-
-// LogicalResult OpenFhePkeEmitter::printOperation(DeserializeKeyGlobalOp op) {
-//   auto rotationIndex = op.getIndex().getInt();
-//
-//   // Check if we have a key_depth attribute
-//   if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
-//     int64_t depth = depthAttr.getInt();
-//     if (depth > 0) {
-//       // If depth > 0, pass it as an argument
-//       os << "keymem_rt.deserializeKey(" << rotationIndex << ", " << depth
-//          << ");\n";
-//     } else {
-//       // If depth = 0, use the normal call
-//       os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
-//     }
-//   } else {
-//     // Default to normal call if no depth attribute
-//     os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
-//   }
-//
-//   return success();
-// }
-//
-// LogicalResult OpenFhePkeEmitter::printOperation(RotateGlobalOp op) {
-//   emitAutoAssignPrefix(op.getResult());
-//
-//   auto rotationIndex = op.getRotationIndex().getInt();
-//   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
-//   auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
-//
-//   os << contextName << "->EvalRotate(" << ciphertextName << ", "
-//      << rotationIndex << ");\n";
-//
-//   return success();
-// }
-//
-// LogicalResult OpenFhePkeEmitter::printOperation(ClearKeyGlobalOp op) {
-//   auto rotationIndex = op.getIndex().getInt();
-//
-//   os << "keymem_rt.clearKey(" << rotationIndex << ");\n";
-//   return success();
-// }
 
 LogicalResult OpenFhePkeEmitter::emitType(Type type, Location loc,
                                           bool constant) {
