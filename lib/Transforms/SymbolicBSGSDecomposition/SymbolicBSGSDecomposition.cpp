@@ -10,6 +10,7 @@
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/include/mlir/IR/IRMapping.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/PatternMatch.h"  // from @llvm-project
 #include "mlir/include/mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 
@@ -94,70 +95,221 @@ struct SymbolicBSGSDecomposition
                  << " rotations to decompose in loop with range " << rangeSize
                  << "\n";
 
-    // Decompose each rotation
+    // Create nested loops for BSGS decomposition
     OpBuilder builder(loop.getContext());
-    for (auto rotOp : rotationsToDecompose) {
-      decomposeRotation(builder, loop, rotOp, rangeSize);
-    }
+    createNestedBSGSLoops(builder, loop, rotationsToDecompose, rangeSize);
   }
 
-  void decomposeRotation(OpBuilder &builder, affine::AffineForOp loop,
-                         openfhe::RotOp rotOp, int64_t rangeSize) {
-    Location loc = rotOp.getLoc();
-    Value iv = loop.getInductionVar();
-    Value inputCt = rotOp.getCiphertext();
-    Value cryptoContext = rotOp.getCryptoContext();
+  void createNestedBSGSLoops(OpBuilder &builder, affine::AffineForOp loop,
+                             SmallVector<openfhe::RotOp> &rotationsToDecompose,
+                             int64_t rangeSize) {
+    Location loc = loop.getLoc();
+    int64_t lowerBound = loop.getConstantLowerBound();
+    int64_t upperBound = loop.getConstantUpperBound();
 
-    // Create symbolic N2 parameter
+    // Get the original loop body operations (we'll need to clone them)
+    SmallVector<Operation *> bodyOps;
+    for (Operation &op : loop.getBody()->without_terminator()) {
+      bodyOps.push_back(&op);
+    }
+
+    // Get loop results info
+    auto yieldOp = cast<affine::AffineYieldOp>(loop.getBody()->getTerminator());
+    SmallVector<Value> yieldOperands(yieldOp.getOperands());
+
     builder.setInsertionPoint(loop);
-    int64_t estimatedN2 = static_cast<int64_t>(std::sqrt(rangeSize));
-    Value N2 = builder.create<arith::ConstantIndexOp>(loc, estimatedN2);
 
-    // Move builder inside the loop, before the rotation
-    builder.setInsertionPoint(rotOp);
+    // Create symbolic N2 parameter (baby step size)
+    // This is left as a runtime value that can be tuned by a later optimization pass
+    // Default heuristic: sqrt(rangeSize)
+    int64_t defaultN2 = static_cast<int64_t>(std::sqrt(rangeSize));
+    Value N2Val = builder.create<arith::ConstantIndexOp>(loc, defaultN2);
 
-    // === Compute BSGS indices ===
+    // Add an attribute to mark this as a tunable parameter
+    N2Val.getDefiningOp()->setAttr("bsgs.tunable_param",
+                                   builder.getStringAttr("baby_step_size"));
 
-    // Giant step index: i floordiv N2
-    auto giantIdxMap = AffineMap::get(
-        1, 1,
-        builder.getAffineDimExpr(0).floorDiv(builder.getAffineSymbolExpr(0)),
+    llvm::dbgs() << "Creating nested loops with symbolic N2 (default = " << defaultN2
+                 << ", range = " << rangeSize << ")\n";
+
+    // Create outer loop for giant steps
+    // Upper bound: ceildiv(rangeSize, N2)
+    // Using affine map for symbolic computation: (rangeSize + s0 - 1) floordiv s0
+    auto outerUBMap = AffineMap::get(
+        0, 1,
+        (builder.getAffineConstantExpr(rangeSize) + builder.getAffineSymbolExpr(0) -
+         builder.getAffineConstantExpr(1)).floorDiv(builder.getAffineSymbolExpr(0)),
         builder.getContext());
-    Value giantIdx = builder.create<affine::AffineApplyOp>(loc, giantIdxMap,
-                                                           ValueRange{iv, N2});
 
-    // Baby step index: i mod N2
-    auto babyIdxMap = AffineMap::get(
-        1, 1, builder.getAffineDimExpr(0) % builder.getAffineSymbolExpr(0),
-        builder.getContext());
-    Value babyIdx = builder.create<affine::AffineApplyOp>(loc, babyIdxMap,
-                                                          ValueRange{iv, N2});
+    SmallVector<Value> iterOperands(loop.getInits().begin(),
+                                    loop.getInits().end());
+    auto outerLoop = builder.create<affine::AffineForOp>(
+        loc, /*lbOperands=*/ValueRange{},
+        /*lbMap=*/builder.getConstantAffineMap(0),
+        /*ubOperands=*/ValueRange{N2Val},
+        /*ubMap=*/outerUBMap,
+        /*step=*/1, iterOperands,
+        [&](OpBuilder &outerBuilder, Location outerLoc, Value giantIV,
+            ValueRange outerIterArgs) {
+          // === GIANT STEP OPERATIONS IN OUTER LOOP ===
+          // These happen once per outer loop iteration, before the inner loop
 
-    // Giant step amount: giant_idx * N2
-    auto giantAmtMap = AffineMap::get(
-        1, 1, builder.getAffineDimExpr(0) * builder.getAffineSymbolExpr(0),
-        builder.getContext());
-    Value giantAmt = builder.create<affine::AffineApplyOp>(
-        loc, giantAmtMap, ValueRange{giantIdx, N2});
+          // We need to process rotations and create giant step operations
+          // We'll store the giant-stepped ciphertexts and pass them to inner loop
+          IRMapping giantStepMapping;
 
-    // === Giant Step Rotation ===
-    Value giantAmtI32 =
-        builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), giantAmt);
+          // Map the crypto context and input ciphertext for rotations
+          for (openfhe::RotOp rotOp : rotationsToDecompose) {
+            Value inputCt = rotOp.getCiphertext();
+            Value cryptoContext = rotOp.getCryptoContext();
+
+            auto evalKeyType = openfhe::EvalKeyType::get(outerBuilder.getContext(),
+                                                         outerBuilder.getIndexAttr(0));
+
+            // Giant step amount: giantIV * N2
+            auto giantAmtMap = AffineMap::get(
+                1, 1, outerBuilder.getAffineDimExpr(0) * outerBuilder.getAffineSymbolExpr(0),
+                outerBuilder.getContext());
+            SmallVector<Value> giantAmtOperands{giantIV, N2Val};
+            Value giantAmt = outerBuilder.create<affine::AffineApplyOp>(
+                outerLoc, giantAmtMap, giantAmtOperands);
+
+            Value giantAmtI32 = outerBuilder.create<arith::IndexCastOp>(
+                outerLoc, outerBuilder.getI32Type(), giantAmt);
+
+            Value ekGiant = outerBuilder.create<openfhe::DeserializeKeyDynamicOp>(
+                outerLoc, evalKeyType, cryptoContext, giantAmtI32);
+
+            Value ctGiant = outerBuilder.create<openfhe::RotOp>(
+                outerLoc, rotOp.getType(), cryptoContext, inputCt, ekGiant);
+
+            outerBuilder.create<openfhe::ClearKeyOp>(outerLoc, cryptoContext, ekGiant);
+
+            // Store the giant-stepped ciphertext for use in inner loop
+            giantStepMapping.map(rotOp.getResult(), ctGiant);
+          }
+
+          // Create inner loop for baby steps (0 to N2)
+          // Inner loop uses symbolic N2 as upper bound
+          auto innerLoop = outerBuilder.create<affine::AffineForOp>(
+              outerLoc, /*lbOperands=*/ValueRange{},
+              /*lbMap=*/outerBuilder.getConstantAffineMap(0),
+              /*ubOperands=*/ValueRange{N2Val},
+              /*ubMap=*/outerBuilder.getDimIdentityMap(),
+              /*step=*/1, outerIterArgs,
+              [&](OpBuilder &innerBuilder, Location innerLoc, Value babyIV,
+                  ValueRange innerIterArgs) {
+                // Compute actual iteration index: i = giantIV * N2 + babyIV
+                // Using symbolic N2 as a symbol in the affine map
+                auto indexMap = AffineMap::get(
+                    2, 1,
+                    innerBuilder.getAffineDimExpr(0) * innerBuilder.getAffineSymbolExpr(0) +
+                        innerBuilder.getAffineDimExpr(1),
+                    innerBuilder.getContext());
+                SmallVector<Value> indexOperands{giantIV, babyIV, N2Val};
+                Value actualIV = innerBuilder.create<affine::AffineApplyOp>(
+                    innerLoc, indexMap, indexOperands);
+
+                // Check if actualIV is within original bounds
+                Value inBounds;
+                if (upperBound != lowerBound + rangeSize) {
+                  // Need to add bound check
+                  Value lbVal = innerBuilder.create<arith::ConstantIndexOp>(
+                      innerLoc, lowerBound);
+                  Value ubVal = innerBuilder.create<arith::ConstantIndexOp>(
+                      innerLoc, upperBound);
+                  Value geLB = innerBuilder.create<arith::CmpIOp>(
+                      innerLoc, arith::CmpIPredicate::sge, actualIV, lbVal);
+                  Value ltUB = innerBuilder.create<arith::CmpIOp>(
+                      innerLoc, arith::CmpIPredicate::slt, actualIV, ubVal);
+                  inBounds = innerBuilder.create<arith::AndIOp>(
+                      innerLoc, geLB, ltUB);
+                }
+
+                // Clone the loop body, replacing rotations with baby step only
+                IRMapping mapping;
+                mapping.map(loop.getInductionVar(), actualIV);
+                for (auto [oldArg, newArg] :
+                     llvm::zip(loop.getRegionIterArgs(), innerIterArgs)) {
+                  mapping.map(oldArg, newArg);
+                }
+
+                // Collect operations to skip (deserialize/clear associated with decomposed rotations)
+                SmallVector<Operation *> opsToSkip;
+                for (openfhe::RotOp rotOp : rotationsToDecompose) {
+                  if (auto deserOp = rotOp.getEvalKey().getDefiningOp<openfhe::DeserializeKeyDynamicOp>()) {
+                    opsToSkip.push_back(deserOp);
+                    // Also skip the index_cast that feeds into the deserialize
+                    if (auto indexCastOp = deserOp.getIndex().getDefiningOp<arith::IndexCastOp>()) {
+                      opsToSkip.push_back(indexCastOp);
+                    }
+                  }
+                  // Find clear_key ops that use this rotation's eval key
+                  for (Operation *user : rotOp.getEvalKey().getUsers()) {
+                    if (auto clearOp = dyn_cast<openfhe::ClearKeyOp>(user)) {
+                      opsToSkip.push_back(clearOp);
+                    }
+                  }
+                }
+
+                SmallVector<Value> results;
+                for (Operation *op : bodyOps) {
+                  // Skip operations associated with rotations we're decomposing
+                  if (llvm::find(opsToSkip, op) != opsToSkip.end()) {
+                    continue;
+                  }
+
+                  // Check if this is a rotation to decompose
+                  if (auto rotOp = dyn_cast<openfhe::RotOp>(op)) {
+                    if (llvm::find(rotationsToDecompose, rotOp) !=
+                        rotationsToDecompose.end()) {
+                      // Apply only baby step rotation (giant step was done in outer loop)
+                      Value ctGiant = giantStepMapping.lookup(rotOp.getResult());
+                      Value result = applyBabyStepRotation(
+                          innerBuilder, rotOp, babyIV, ctGiant, mapping);
+                      mapping.map(rotOp.getResult(), result);
+                      continue;
+                    }
+                  }
+
+                  // Clone the operation normally
+                  Operation *clonedOp = innerBuilder.clone(*op, mapping);
+                  for (auto [oldResult, newResult] :
+                       llvm::zip(op->getResults(), clonedOp->getResults())) {
+                    mapping.map(oldResult, newResult);
+                  }
+                }
+
+                // Yield the mapped results
+                SmallVector<Value> mappedYields;
+                for (Value yieldVal : yieldOperands) {
+                  mappedYields.push_back(mapping.lookup(yieldVal));
+                }
+                innerBuilder.create<affine::AffineYieldOp>(innerLoc,
+                                                           mappedYields);
+              });
+
+          // Outer loop yields the results from inner loop
+          outerBuilder.create<affine::AffineYieldOp>(outerLoc,
+                                                     innerLoop.getResults());
+        });
+
+    // Replace the original loop with the new nested loops
+    loop.replaceAllUsesWith(outerLoop.getResults());
+    loop.erase();
+  }
+
+  Value applyBabyStepRotation(OpBuilder &builder, openfhe::RotOp rotOp,
+                              Value babyIV, Value ctGiant, IRMapping &mapping) {
+    Location loc = rotOp.getLoc();
+    Value cryptoContext = mapping.lookupOrDefault(rotOp.getCryptoContext());
 
     auto evalKeyType = openfhe::EvalKeyType::get(builder.getContext(),
                                                  builder.getIndexAttr(0));
 
-    Value ekGiant = builder.create<openfhe::DeserializeKeyDynamicOp>(
-        loc, evalKeyType, cryptoContext, giantAmtI32);
-
-    Value ctGiant = builder.create<openfhe::RotOp>(
-        loc, rotOp.getType(), cryptoContext, inputCt, ekGiant);
-
-    builder.create<openfhe::ClearKeyOp>(loc, cryptoContext, ekGiant);
-
-    // === Baby Step Rotation ===
+    // === Baby Step Rotation Only ===
     Value babyAmtI32 =
-        builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), babyIdx);
+        builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), babyIV);
 
     Value ekBaby = builder.create<openfhe::DeserializeKeyDynamicOp>(
         loc, evalKeyType, cryptoContext, babyAmtI32);
@@ -167,35 +319,7 @@ struct SymbolicBSGSDecomposition
 
     builder.create<openfhe::ClearKeyOp>(loc, cryptoContext, ekBaby);
 
-    // Replace the original rotation
-    rotOp.getResult().replaceAllUsesWith(ctBaby);
-
-    // Find and remove the original deserialize and clear operations
-    auto originalDeser =
-        rotOp.getEvalKey().getDefiningOp<openfhe::DeserializeKeyDynamicOp>();
-    if (originalDeser) {
-      // Find the corresponding clear operation
-      for (Operation *user : originalDeser.getResult().getUsers()) {
-        if (user == rotOp.getOperation()) continue;
-        if (auto clearOp = dyn_cast<openfhe::ClearKeyOp>(user)) {
-          clearOp.erase();
-          break;
-        }
-      }
-
-      Value deserInput = originalDeser.getIndex();
-      if (auto indexCast = deserInput.getDefiningOp<arith::IndexCastOp>()) {
-        // Check if this index_cast has no other users
-        if (indexCast->hasOneUse()) {
-          indexCast.erase();
-        }
-      }
-      originalDeser.erase();
-    }
-
-    rotOp.erase();
-
-    llvm::dbgs() << "Decomposed rotation with N2 = " << estimatedN2 << "\n";
+    return ctBaby;
   }
 };
 
