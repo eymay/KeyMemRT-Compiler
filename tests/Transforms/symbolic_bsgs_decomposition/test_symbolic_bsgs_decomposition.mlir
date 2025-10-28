@@ -7,14 +7,13 @@
 !Z67043329_i64 = !mod_arith.int<67043329 : i64>
 !Z67239937_i64 = !mod_arith.int<67239937 : i64>
 !cc = !openfhe.crypto_context
-!ek = !openfhe.eval_key<index = 0 : index>
+!rk = !kmrt.rot_key<rotation_index = 0>
 #inverse_canonical_encoding = #lwe.inverse_canonical_encoding<scaling_factor = 26>
 #inverse_canonical_encoding1 = #lwe.inverse_canonical_encoding<scaling_factor = 1>
 #key = #lwe.key<>
-// CHECK-DAG: #[[OUTER_UB:.*]] = affine_map<()[s0] -> ((s0 + 14) floordiv s0)>
 // CHECK-DAG: #[[GIANT_STEP:.*]] = affine_map<(d0)[s0] -> (d0 * s0)>
-// CHECK-DAG: #[[INNER_UB:.*]] = affine_map<(d0) -> (d0)>
 // CHECK-DAG: #[[ACTUAL_IDX:.*]] = affine_map<(d0, d1)[s0] -> (d0 * s0 + d1)>
+// CHECK-DAG: #[[REM_IDX:.*]] = affine_map<(d0) -> (d0 + 12)>
 #modulus_chain_L5_C5 = #lwe.modulus_chain<elements = <536903681 : i64, 67043329 : i64, 66994177 : i64, 67239937 : i64, 66961409 : i64, 66813953 : i64>, current = 5>
 #ring_f64_1 = #polynomial.ring<coefficientType = f64, polynomialModulus = <1>>
 #ring_f64_1_x8192 = #polynomial.ring<coefficientType = f64, polynomialModulus = <1 + x**8192>>
@@ -46,28 +45,36 @@ module attributes {ckks.schemeParam = #ckks.scheme_param<logN = 13, Q = [5369036
     %extracted_slice = tensor.extract_slice %cst[0, 0] [1, 4] [1, 1] : tensor<16x4xf64> to tensor<4xf64>
     %pt = lwe.rlwe_encode %extracted_slice {encoding = #inverse_canonical_encoding1, ring = #ring_f64_1} : tensor<4xf64> -> !pt
     %ct_0 = openfhe.mul_plain %cc, %ct, %pt : (!cc, !ct_L5, !pt) -> !ct_L5
-    // CHECK: %[[N2:.*]] = arith.constant {bsgs.tunable_param = "baby_step_size"} 3 : index
-    // CHECK: affine.for %[[GIANT_IV:.*]] = 0 to #[[OUTER_UB]]()[%[[N2]]]
+    // CHECK: %[[N2:.*]] = arith.constant {bsgs.tunable_param = "baby_step_size"} 4 : index
+    // CHECK: affine.for %[[GIANT_IV:.*]] = 0 to 3
     // CHECK:   %[[GIANT_AMT:.*]] = affine.apply #[[GIANT_STEP]](%[[GIANT_IV]])[%[[N2]]]
-    // CHECK:   %[[GIANT_AMT_I32:.*]] = arith.index_cast %[[GIANT_AMT]] : index to i32
-    // CHECK:   %[[EK_GIANT:.*]] = openfhe.deserialize_key_dynamic %cc, %[[GIANT_AMT_I32]]
+    // CHECK:   %[[EK_GIANT:.*]] = kmrt.load_key %[[GIANT_AMT]] : index -> <>
     // CHECK:   %[[CT_GIANT:.*]] = openfhe.rot %cc, %ct, %[[EK_GIANT]]
-    // CHECK:   openfhe.clear_key %cc, %[[EK_GIANT]]
-    // CHECK:   affine.for %[[BABY_IV:.*]] = 0 to #[[INNER_UB]](%[[N2]])
+    // CHECK:   kmrt.clear_key %[[EK_GIANT]] : <>
+    // CHECK:   affine.for %[[BABY_IV:.*]] = 0 to 4
     // CHECK:     %[[ACTUAL_IV:.*]] = affine.apply #[[ACTUAL_IDX]](%[[GIANT_IV]], %[[BABY_IV]])[%[[N2]]]
-    // CHECK:     %[[BABY_AMT_I32:.*]] = arith.index_cast %[[BABY_IV]] : index to i32
-    // CHECK:     %[[EK_BABY:.*]] = openfhe.deserialize_key_dynamic %cc, %[[BABY_AMT_I32]]
+    // CHECK:     %[[EK_BABY:.*]] = kmrt.load_key %[[BABY_IV]] : index -> <>
     // CHECK:     %[[CT_BABY:.*]] = openfhe.rot %cc, %[[CT_GIANT]], %[[EK_BABY]]
-    // CHECK:     openfhe.clear_key %cc, %[[EK_BABY]]
+    // CHECK:     kmrt.clear_key %[[EK_BABY]] : <>
     // CHECK:     tensor.extract_slice
     // CHECK:     lwe.rlwe_encode
     // CHECK:     openfhe.mul_plain
     // CHECK:     openfhe.add
+    // Remainder loop
+    // CHECK: %[[C12:.*]] = arith.constant 12 : index
+    // CHECK: %[[EK_REM_GIANT:.*]] = kmrt.load_key %[[C12]] : index -> <>
+    // CHECK: %[[CT_REM_GIANT:.*]] = openfhe.rot %cc, %ct, %[[EK_REM_GIANT]]
+    // CHECK: kmrt.clear_key %[[EK_REM_GIANT]] : <>
+    // CHECK: affine.for %[[REM_IV:.*]] = 0 to 3
+    // CHECK:   %[[REM_ACTUAL_IV:.*]] = affine.apply #[[REM_IDX]](%[[REM_IV]])
+    // CHECK:   %[[EK_REM_BABY:.*]] = kmrt.load_key %[[REM_IV]] : index -> <>
+    // CHECK:   %[[CT_REM_BABY:.*]] = openfhe.rot %cc, %[[CT_REM_GIANT]], %[[EK_REM_BABY]]
+    // CHECK:   kmrt.clear_key %[[EK_REM_BABY]] : <>
     %ct_1 = affine.for %arg0 = 1 to 16 iter_args(%ct_2 = %ct_0) -> (!ct_L5) {
-      %0 = arith.index_cast %arg0 : index to i32
-      %ek = openfhe.deserialize_key_dynamic %cc, %0 : (!cc, i32) -> !ek
-      %ct_3 = openfhe.rot %cc, %ct, %ek : (!cc, !ct_L5, !ek) -> !ct_L5
-      openfhe.clear_key %cc, %ek : (!cc, !ek) -> ()
+      %0 = arith.index_cast %arg0 : index to i64
+      %rk = kmrt.load_key %0 : i64 -> !rk
+      %ct_3 = openfhe.rot %cc, %ct, %rk : (!cc, !ct_L5, !rk) -> !ct_L5
+      kmrt.clear_key %rk : !rk
       %extracted_slice_4 = tensor.extract_slice %cst[%arg0, 0] [1, 4] [1, 1] : tensor<16x4xf64> to tensor<4xf64>
       %pt_5 = lwe.rlwe_encode %extracted_slice_4 {encoding = #inverse_canonical_encoding1, ring = #ring_f64_1} : tensor<4xf64> -> !pt
       %ct_6 = openfhe.mul_plain %cc, %ct_3, %pt_5 : (!cc, !ct_L5, !pt) -> !ct_L5

@@ -2,6 +2,8 @@
 
 #include "lib/Transforms/SymbolicBSGSDecomposition/SymbolicBSGSDecomposition.h"
 
+#include <cmath>
+
 #include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "llvm/include/llvm/Support/Debug.h"
@@ -70,6 +72,8 @@ struct SymbolicBSGSDecomposition
     int64_t upperBound = loop.getConstantUpperBound();
     int64_t rangeSize = upperBound - lowerBound;
 
+    llvm::dbgs() << "Processing loop with bounds [" << lowerBound << ", " << upperBound << ")\n";
+
     Value iv = loop.getInductionVar();
 
     // Find rotation operations that depend on the IV
@@ -121,34 +125,33 @@ struct SymbolicBSGSDecomposition
 
     // Create symbolic N2 parameter (baby step size)
     // This is left as a runtime value that can be tuned by a later optimization
-    // pass Default heuristic: sqrt(rangeSize)
-    int64_t defaultN2 = static_cast<int64_t>(std::sqrt(rangeSize));
+    // pass Default heuristic: ceil(sqrt(rangeSize))
+    int64_t defaultN2 = static_cast<int64_t>(std::ceil(std::sqrt(rangeSize)));
     Value N2Val = builder.create<arith::ConstantIndexOp>(loc, defaultN2);
 
     // Add an attribute to mark this as a tunable parameter
     N2Val.getDefiningOp()->setAttr("bsgs.tunable_param",
                                    builder.getStringAttr("baby_step_size"));
 
-    llvm::dbgs() << "Creating nested loops with symbolic N2 (default = "
-                 << defaultN2 << ", range = " << rangeSize << ")\n";
+    // Calculate number of full giant step iterations and remainder
+    int64_t numFullGiants = rangeSize / defaultN2;
+    int64_t remainderSize = rangeSize % defaultN2;
 
-    // Create outer loop for giant steps
-    // Upper bound: ceildiv(rangeSize, N2)
-    // Using affine map for symbolic computation: (rangeSize + s0 - 1) floordiv
-    // s0
-    auto outerUBMap = AffineMap::get(
-        0, 1,
-        (builder.getAffineConstantExpr(rangeSize) +
-         builder.getAffineSymbolExpr(0) - builder.getAffineConstantExpr(1))
-            .floorDiv(builder.getAffineSymbolExpr(0)),
-        builder.getContext());
+    llvm::dbgs() << "Creating nested loops with symbolic N2 (default = "
+                 << defaultN2 << ", range = " << rangeSize
+                 << ", full_giants = " << numFullGiants
+                 << ", remainder = " << remainderSize << ")\n";
+
+    // Create outer loop for giant steps (full iterations only)
+    // Upper bound: rangeSize / N2 (integer division)
+    auto outerUBMap = builder.getConstantAffineMap(numFullGiants);
 
     SmallVector<Value> iterOperands(loop.getInits().begin(),
                                     loop.getInits().end());
     auto outerLoop = builder.create<affine::AffineForOp>(
         loc, /*lbOperands=*/ValueRange{},
         /*lbMap=*/builder.getConstantAffineMap(0),
-        /*ubOperands=*/ValueRange{N2Val},
+        /*ubOperands=*/ValueRange{},
         /*ubMap=*/outerUBMap,
         /*step=*/1, iterOperands,
         [&](OpBuilder &outerBuilder, Location outerLoc, Value giantIV,
@@ -176,14 +179,11 @@ struct SymbolicBSGSDecomposition
             Value giantAmt = outerBuilder.create<affine::AffineApplyOp>(
                 outerLoc, giantAmtMap, giantAmtOperands);
 
-            // Convert index to i64 for KMRT operations
-            Value giantAmtI64 = outerBuilder.create<arith::IndexCastOp>(
-                outerLoc, outerBuilder.getI64Type(), giantAmt);
-
-            auto rotKeyType = kmrt::RotKeyType::get(outerBuilder.getContext(),
-                                                    /*rotation_index=*/0);
+            // Load key for giant step - dynamic rotation
+            // (giantAmt is computed from giantIV * N2, runtime-determined)
+            auto rotKeyType = kmrt::RotKeyType::get(outerBuilder.getContext(), std::nullopt);
             Value rkGiant = outerBuilder.create<kmrt::LoadKeyOp>(
-                outerLoc, rotKeyType, giantAmtI64);
+                outerLoc, rotKeyType, giantAmt);
 
             // Use KMRT RotKey directly with OpenFHE rotation
             Value ctGiant = outerBuilder.create<openfhe::RotOp>(
@@ -197,12 +197,12 @@ struct SymbolicBSGSDecomposition
           }
 
           // Create inner loop for baby steps (0 to N2)
-          // Inner loop uses symbolic N2 as upper bound
+          // For full giant step iterations, inner loop goes from 0 to N2
           auto innerLoop = outerBuilder.create<affine::AffineForOp>(
               outerLoc, /*lbOperands=*/ValueRange{},
               /*lbMap=*/outerBuilder.getConstantAffineMap(0),
-              /*ubOperands=*/ValueRange{N2Val},
-              /*ubMap=*/outerBuilder.getDimIdentityMap(),
+              /*ubOperands=*/ValueRange{},
+              /*ubMap=*/outerBuilder.getConstantAffineMap(defaultN2),
               /*step=*/1, outerIterArgs,
               [&](OpBuilder &innerBuilder, Location innerLoc, Value babyIV,
                   ValueRange innerIterArgs) {
@@ -217,22 +217,6 @@ struct SymbolicBSGSDecomposition
                 SmallVector<Value> indexOperands{giantIV, babyIV, N2Val};
                 Value actualIV = innerBuilder.create<affine::AffineApplyOp>(
                     innerLoc, indexMap, indexOperands);
-
-                // Check if actualIV is within original bounds
-                Value inBounds;
-                if (upperBound != lowerBound + rangeSize) {
-                  // Need to add bound check
-                  Value lbVal = innerBuilder.create<arith::ConstantIndexOp>(
-                      innerLoc, lowerBound);
-                  Value ubVal = innerBuilder.create<arith::ConstantIndexOp>(
-                      innerLoc, upperBound);
-                  Value geLB = innerBuilder.create<arith::CmpIOp>(
-                      innerLoc, arith::CmpIPredicate::sge, actualIV, lbVal);
-                  Value ltUB = innerBuilder.create<arith::CmpIOp>(
-                      innerLoc, arith::CmpIPredicate::slt, actualIV, ubVal);
-                  inBounds =
-                      innerBuilder.create<arith::AndIOp>(innerLoc, geLB, ltUB);
-                }
 
                 // Clone the loop body, replacing rotations with baby step only
                 IRMapping mapping;
@@ -309,8 +293,118 @@ struct SymbolicBSGSDecomposition
                                                      innerLoop.getResults());
         });
 
+    // Handle remainder iterations if any
+    // The remainder is just a single giant step with partial baby steps
+    Operation *finalLoop;
+    if (remainderSize > 0) {
+      builder.setInsertionPointAfter(outerLoop);
+
+      // Giant step offset for remainder: numFullGiants * defaultN2
+      int64_t giantOffset = numFullGiants * defaultN2;
+
+      // Apply the giant step rotation (just once, not in a loop)
+      IRMapping giantStepMapping;
+      for (openfhe::RotOp rotOp : rotationsToDecompose) {
+        Value inputCt = rotOp.getCiphertext();
+        Value cryptoContext = rotOp.getCryptoContext();
+
+        // Giant step amount: constant offset
+        Value giantAmt = builder.create<arith::ConstantIndexOp>(loc, giantOffset);
+
+        // Load key for giant step
+        auto rotKeyType = kmrt::RotKeyType::get(builder.getContext(), std::nullopt);
+        Value rkGiant = builder.create<kmrt::LoadKeyOp>(loc, rotKeyType, giantAmt);
+
+        // Apply giant step rotation
+        Value ctGiant = builder.create<openfhe::RotOp>(
+            loc, rotOp.getType(), cryptoContext, inputCt, rkGiant);
+
+        // Clear giant step key
+        builder.create<kmrt::ClearKeyOp>(loc, rkGiant);
+
+        // Store for use in baby step loop
+        giantStepMapping.map(rotOp.getResult(), ctGiant);
+      }
+
+      // Create baby step loop for remainder (0 to remainderSize)
+      auto remainderLoop = builder.create<affine::AffineForOp>(
+          loc, /*lbOperands=*/ValueRange{},
+          /*lbMap=*/builder.getConstantAffineMap(0),
+          /*ubOperands=*/ValueRange{},
+          /*ubMap=*/builder.getConstantAffineMap(remainderSize),
+          /*step=*/1, outerLoop.getResults(),
+          [&](OpBuilder &remBuilder, Location remLoc, Value babyIV,
+              ValueRange remIterArgs) {
+            // Compute actual iteration index: giantOffset + babyIV
+            auto indexMap = AffineMap::get(
+                1, 0,
+                remBuilder.getAffineDimExpr(0) + remBuilder.getAffineConstantExpr(giantOffset),
+                remBuilder.getContext());
+            Value actualIV = remBuilder.create<affine::AffineApplyOp>(
+                remLoc, indexMap, ValueRange{babyIV});
+
+            // Clone the loop body, replacing rotations with baby step only
+            IRMapping mapping;
+            mapping.map(loop.getInductionVar(), actualIV);
+            for (auto [oldArg, newArg] :
+                 llvm::zip(loop.getRegionIterArgs(), remIterArgs)) {
+              mapping.map(oldArg, newArg);
+            }
+
+            // Collect operations to skip
+            SmallVector<Operation *> opsToSkip;
+            for (openfhe::RotOp rotOp : rotationsToDecompose) {
+              if (auto loadOp = rotOp.getEvalKey().getDefiningOp<kmrt::LoadKeyOp>()) {
+                opsToSkip.push_back(loadOp);
+                if (auto indexCastOp = loadOp.getIndex().getDefiningOp<arith::IndexCastOp>()) {
+                  opsToSkip.push_back(indexCastOp);
+                }
+              }
+              for (Operation *user : rotOp.getEvalKey().getUsers()) {
+                if (auto clearOp = dyn_cast<kmrt::ClearKeyOp>(user)) {
+                  opsToSkip.push_back(clearOp);
+                }
+              }
+            }
+
+            for (Operation *op : bodyOps) {
+              if (llvm::find(opsToSkip, op) != opsToSkip.end()) {
+                continue;
+              }
+
+              // Check if this is a rotation to decompose
+              if (auto rotOp = dyn_cast<openfhe::RotOp>(op)) {
+                if (llvm::find(rotationsToDecompose, rotOp) != rotationsToDecompose.end()) {
+                  // Apply only baby step rotation
+                  Value ctGiant = giantStepMapping.lookup(rotOp.getResult());
+                  Value result = applyBabyStepRotation(remBuilder, rotOp, babyIV, ctGiant, mapping);
+                  mapping.map(rotOp.getResult(), result);
+                  continue;
+                }
+              }
+
+              // Clone the operation normally
+              Operation *clonedOp = remBuilder.clone(*op, mapping);
+              for (auto [oldResult, newResult] :
+                   llvm::zip(op->getResults(), clonedOp->getResults())) {
+                mapping.map(oldResult, newResult);
+              }
+            }
+
+            SmallVector<Value> mappedYields;
+            for (Value yieldVal : yieldOperands) {
+              mappedYields.push_back(mapping.lookup(yieldVal));
+            }
+            remBuilder.create<affine::AffineYieldOp>(remLoc, mappedYields);
+          });
+
+      finalLoop = remainderLoop;
+    } else {
+      finalLoop = outerLoop;
+    }
+
     // Replace the original loop with the new nested loops
-    loop.replaceAllUsesWith(outerLoop.getResults());
+    loop.replaceAllUsesWith(finalLoop->getResults());
     loop.erase();
   }
 
@@ -320,13 +414,9 @@ struct SymbolicBSGSDecomposition
     Value cryptoContext = mapping.lookupOrDefault(rotOp.getCryptoContext());
 
     // === Baby Step Rotation Only ===
-    // Convert index to i64 for KMRT operations
-    Value babyAmtI64 =
-        builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), babyIV);
-
-    auto rotKeyType =
-        kmrt::RotKeyType::get(builder.getContext(), /*rotation_index=*/0);
-    Value rkBaby = builder.create<kmrt::LoadKeyOp>(loc, rotKeyType, babyAmtI64);
+    // Load key for baby step - dynamic rotation (babyIV is runtime-determined)
+    auto rotKeyType = kmrt::RotKeyType::get(builder.getContext(), std::nullopt);
+    Value rkBaby = builder.create<kmrt::LoadKeyOp>(loc, rotKeyType, babyIV);
 
     // Use KMRT RotKey directly with OpenFHE rotation
     Value ctBaby = builder.create<openfhe::RotOp>(
