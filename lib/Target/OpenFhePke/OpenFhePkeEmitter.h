@@ -20,6 +20,7 @@
 #include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"   // from @llvm-project
+#include "mlir/include/mlir/Dialect/SCF/IR/SCF.h"        // from @llvm-project
 #include "mlir/include/mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinOps.h"             // from @llvm-project
 #include "mlir/include/mlir/IR/Location.h"               // from @llvm-project
@@ -88,7 +89,12 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(::mlir::ModuleOp op);
   LogicalResult printOperation(::mlir::affine::AffineForOp op);
   LogicalResult printOperation(::mlir::affine::AffineYieldOp op);
+  LogicalResult printOperation(::mlir::affine::AffineApplyOp op);
+  LogicalResult printOperation(::mlir::scf::IfOp op);
+  LogicalResult printOperation(::mlir::scf::ForOp op);
+  LogicalResult printOperation(::mlir::scf::YieldOp op);
   LogicalResult printOperation(::mlir::arith::AddIOp op);
+  LogicalResult printOperation(::mlir::arith::AndIOp op);
   LogicalResult printOperation(::mlir::arith::CmpIOp op);
   LogicalResult printOperation(::mlir::arith::ConstantOp op);
   LogicalResult printOperation(::mlir::arith::DivSIOp op);
@@ -138,6 +144,8 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(RelinOp op);
   LogicalResult printOperation(RotOp op);
   LogicalResult printOperation(kmrt::LoadKeyOp op);
+  LogicalResult printOperation(kmrt::UseKeyOp op);
+  LogicalResult printOperation(kmrt::AssumeLoadedOp op);
   LogicalResult printOperation(kmrt::ClearKeyOp op);
   LogicalResult printOperation(kmrt::PrefetchKeyOp op);
   LogicalResult printOperation(SetupBootstrapOp op);
@@ -159,6 +167,7 @@ class OpenFhePkeEmitter {
   LogicalResult printOperation(ChebyshevOp op);
   void streamSSAName(::mlir::Value value);
   void emitLogCTWithSSA(::mlir::Value value);
+  void emitLogRotWithSSA(::mlir::Value value);
   // Helpers for above
   LogicalResult printEvalMethod(::mlir::Value result,
                                 ::mlir::Value cryptoContext,

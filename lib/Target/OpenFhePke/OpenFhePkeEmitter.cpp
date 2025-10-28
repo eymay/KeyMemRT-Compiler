@@ -34,6 +34,7 @@
 #include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"   // from @llvm-project
+#include "mlir/include/mlir/Dialect/SCF/IR/SCF.h"        // from @llvm-project
 #include "mlir/include/mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/AsmState.h"
 #include "mlir/include/mlir/IR/BuiltinAttributes.h"      // from @llvm-project
@@ -249,13 +250,17 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           .Case<func::FuncOp, func::CallOp, func::ReturnOp>(
               [&](auto op) { return printOperation(op); })
           // Affine ops
-          .Case<affine::AffineForOp, affine::AffineYieldOp>(
+          .Case<affine::AffineForOp, affine::AffineYieldOp,
+                affine::AffineApplyOp>(
               [&](auto op) { return printOperation(op); })
           // Arith ops
           .Case<arith::ConstantOp, arith::ExtSIOp, arith::ExtUIOp,
                 arith::IndexCastOp, arith::ExtFOp, arith::RemSIOp,
-                arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
-                arith::CmpIOp, arith::SelectOp>(
+                arith::AddIOp, arith::AndIOp, arith::SubIOp, arith::MulIOp,
+                arith::DivSIOp, arith::CmpIOp, arith::SelectOp>(
+              [&](auto op) { return printOperation(op); })
+          // SCF ops
+          .Case<scf::IfOp, scf::ForOp, scf::YieldOp>(
               [&](auto op) { return printOperation(op); })
           // Tensor ops
           .Case<tensor::ConcatOp, tensor::EmptyOp, tensor::InsertOp,
@@ -266,7 +271,8 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           .Case<lwe::RLWEDecodeOp, lwe::ReinterpretApplicationDataOp>(
               [&](auto op) { return printOperation(op); })
           // KMRT ops
-          .Case<kmrt::LoadKeyOp, kmrt::ClearKeyOp, kmrt::PrefetchKeyOp>(
+          .Case<kmrt::LoadKeyOp, kmrt::UseKeyOp, kmrt::AssumeLoadedOp,
+                kmrt::ClearKeyOp, kmrt::PrefetchKeyOp>(
               [&](auto op) { return printOperation(op); })
           // OpenFHE ops
           .Case<AddOp, AddPlainOp, SubOp, SubPlainOp, MulNoRelinOp, MulOp,
@@ -540,6 +546,229 @@ LogicalResult OpenFhePkeEmitter::printOperation(affine::AffineYieldOp op) {
   return success();
 }
 
+LogicalResult OpenFhePkeEmitter::printOperation(affine::AffineApplyOp op) {
+  // Emit: result_type result_name = <affine_expression>;
+  // For example: int64_t idx = iv * 2 + 1;
+
+  Value result = op.getResult();
+  if (failed(emitTypedAssignPrefix(result, op.getLoc(), /*constant=*/false))) {
+    return emitError(op.getLoc(),
+                     "Failed to emit typed assign prefix for affine.apply");
+  }
+
+  // Get the affine map and convert it to a C++ expression
+  AffineMap map = op.getAffineMap();
+  if (map.getNumResults() != 1) {
+    return emitError(op.getLoc(),
+                     "Only affine maps with a single result are supported");
+  }
+
+  AffineExpr expr = map.getResult(0);
+  SmallVector<Value> operands(op.getOperands().begin(), op.getOperands().end());
+
+  // Helper to emit an affine expression as C++ code
+  std::function<LogicalResult(AffineExpr)> emitAffineExpr =
+      [&](AffineExpr e) -> LogicalResult {
+    if (auto constExpr = dyn_cast<AffineConstantExpr>(e)) {
+      os << constExpr.getValue();
+      return success();
+    } else if (auto dimExpr = dyn_cast<AffineDimExpr>(e)) {
+      unsigned pos = dimExpr.getPosition();
+      if (pos >= operands.size()) {
+        return emitError(op.getLoc(), "Dimension position out of bounds");
+      }
+      os << variableNames->getNameForValue(operands[pos]);
+      return success();
+    } else if (auto symExpr = dyn_cast<AffineSymbolExpr>(e)) {
+      unsigned pos = symExpr.getPosition() + map.getNumDims();
+      if (pos >= operands.size()) {
+        return emitError(op.getLoc(), "Symbol position out of bounds");
+      }
+      os << variableNames->getNameForValue(operands[pos]);
+      return success();
+    } else if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(e)) {
+      os << "(";
+      if (failed(emitAffineExpr(binExpr.getLHS()))) return failure();
+
+      switch (binExpr.getKind()) {
+        case AffineExprKind::Add:
+          os << " + ";
+          break;
+        case AffineExprKind::Mul:
+          os << " * ";
+          break;
+        case AffineExprKind::FloorDiv:
+          os << " / ";
+          break;
+        case AffineExprKind::CeilDiv:
+          // Ceiling division: (a + b - 1) / b
+          // For now, just use floor division and emit a warning
+          os << " / ";
+          break;
+        case AffineExprKind::Mod:
+          os << " % ";
+          break;
+        default:
+          return emitError(op.getLoc(), "Unsupported affine binary operation");
+      }
+
+      if (failed(emitAffineExpr(binExpr.getRHS()))) return failure();
+      os << ")";
+      return success();
+    }
+
+    return emitError(op.getLoc(), "Unsupported affine expression type");
+  };
+
+  if (failed(emitAffineExpr(expr))) {
+    return emitError(op.getLoc(), "Failed to emit affine expression");
+  }
+
+  os << ";\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(scf::IfOp op) {
+  // ResultType result;
+  // if (value) {
+  //   result = blah;
+  // } else {
+  //   result = blah;
+  // }
+  bool hasElse = !op.getElseRegion().empty();
+
+  for (auto i = 0; i < op.getNumResults(); ++i) {
+    Value result = op.getResults()[i];
+    Value thenYieldedValue = op.thenYield().getResults()[i];
+    Value elseYieldedValue;
+
+    if (hasElse) {
+      elseYieldedValue = op.elseYield().getResults()[i];
+    }
+
+    // Map the yielded value names to the result names if the yielded value is a
+    // tensor.
+    if (isa<ShapedType>(result.getType())) {
+      variableNames->mapValueNameToValue(thenYieldedValue, result);
+      if (hasElse) {
+        variableNames->mapValueNameToValue(elseYieldedValue, result);
+        mutableValues.insert(elseYieldedValue);
+      }
+      mutableValues.insert(thenYieldedValue);
+    } else {
+      if (failed(emitType(result.getType(), op.getLoc(),
+                          /*constant=*/false))) {
+        return emitError(op.getLoc(),
+                         llvm::formatv("Failed to emit type for {}", result));
+      }
+      os << " " << variableNames->getNameForValue(result) << ";\n";
+      mutableValues.insert(result);
+      // Map the yielded value names to the result name to avoid creating
+      // intermediate variables inside the if/else blocks
+      variableNames->mapValueNameToValue(thenYieldedValue, result);
+      mutableValues.insert(thenYieldedValue);
+      if (hasElse) {
+        variableNames->mapValueNameToValue(elseYieldedValue, result);
+        mutableValues.insert(elseYieldedValue);
+      }
+    }
+  }
+
+  os << llvm::formatv("if ({0}) {{\n",
+                      variableNames->getNameForValue(op.getCondition()));
+  os.indent();
+  for (Operation &op : *op.thenBlock()) {
+    if (failed(translate(op))) {
+      return op.emitOpError() << "Failed to translate for if then block";
+    }
+  }
+  os.unindent();
+  os << "}";
+
+  if (hasElse) {
+    os << llvm::formatv(" else {{\n");
+    os.indent();
+    for (Operation &op : *op.elseBlock()) {
+      if (failed(translate(op))) {
+        return op.emitOpError() << "Failed to translate for if else block";
+      }
+    }
+    os.unindent();
+    os << "}";
+  }
+
+  os << "\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(scf::ForOp op) {
+  for (auto i = 0; i < op.getNumRegionIterArgs(); ++i) {
+    // Assign the loop's results to use as initial iter args. We must use
+    // non-const types so that the loop body can modify them.
+    Value result = op.getResults()[i];
+    Value operand = op.getInitArgs()[i];
+    Value iterArg = op.getRegionIterArgs()[i];
+    Value yieldedValue = op.getYieldedValues()[i];
+
+    // Map the region's iter args to the result names.
+    // Map the yielded value names to the result names.
+    variableNames->mapValueNameToValue(iterArg, result);
+    variableNames->mapValueNameToValue(yieldedValue, result);
+    mutableValues.insert(op.getRegionIterArgs()[i]);
+    mutableValues.insert(op.getYieldedValues()[i]);
+
+    if (variableNames->contains(result) && variableNames->contains(operand) &&
+        variableNames->getNameForValue(result) ==
+            variableNames->getNameForValue(operand)) {
+      // This occurs in cases where the loop is inserting into a tensor and
+      // passing it along as an inter arg.
+      continue;
+    }
+
+    if (failed(emitTypedAssignPrefix(result, op.getLoc(),
+                                     /*constant=*/false))) {
+      return emitError(
+          op.getLoc(),
+          llvm::formatv("Failed to emit typed assign prefix for {}", result));
+    }
+    os << variableNames->getNameForValue(operand);
+    if (!isa<ShapedType>(result.getType())) {
+      // Note that for vector types we don't need to clone.
+      os << "->Clone()";
+    }
+    os << ";\n";
+  }
+
+  auto getConstantOrValue = [&](Value value) -> std::string {
+    return getStringForConstant(value).value_or(
+        variableNames->getNameForValue(value));
+  };
+
+  os << llvm::formatv("for (auto {0} = {1}; {0} < {2}; ++{0}) {{\n",
+                      variableNames->getNameForValue(op.getInductionVar()),
+                      getConstantOrValue(op.getLowerBound()),
+                      getConstantOrValue(op.getUpperBound()));
+  os.indent();
+  for (Operation &op : *op.getBody()) {
+    if (failed(translate(op))) {
+      return op.emitOpError() << "Failed to translate for loop block";
+    }
+  }
+
+  os.unindent();
+  os << "}\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(scf::YieldOp op) {
+  // Assume all yielded loop values have already been assigned.
+  // For scf.if, the yielded values are mapped to the result variable names
+  // in the scf::IfOp handler, so we don't need to emit any assignment here.
+  // The mapping ensures operations inside the if/else blocks directly write
+  // to the result variables, avoiding intermediate variables.
+  return success();
+}
+
 void OpenFhePkeEmitter::emitAutoAssignPrefix(Value result) {
   // If the result values are iter args of a region, then avoid using a auto
   // assign prefix.
@@ -692,22 +921,33 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
   os << variableNames->getNameForValue(op.getCryptoContext()) << "->EvalRotate("
      << variableNames->getNameForValue(op.getCiphertext()) << ", ";
 
-  // Get rotation index - either from the type (static) or from the LoadKeyOp operand (dynamic)
-  auto evalKeyType = cast<kmrt::RotKeyType>(op.getEvalKey().getType());
-  if (evalKeyType.isStatic()) {
-    // Static rotation index baked into the type
-    os << evalKeyType.getStaticIndex();
-  } else {
-    // Dynamic rotation - get from the LoadKeyOp's operand
-    if (auto loadOp = op.getEvalKey().getDefiningOp<kmrt::LoadKeyOp>()) {
-      os << variableNames->getNameForValue(loadOp.getIndex());
-    } else {
-      return op.emitError("Dynamic rotation key must come from LoadKeyOp");
+  // Get rotation index - use the RotKey variable which holds the rotation index value
+  Value evalKey = op.getEvalKey();
+
+  // Try to get the index from various sources
+  if (auto loadOp = evalKey.getDefiningOp<kmrt::LoadKeyOp>()) {
+    // Direct from LoadKeyOp - use its index operand
+    os << variableNames->getNameForValue(loadOp.getIndex());
+  } else if (auto useOp = evalKey.getDefiningOp<kmrt::UseKeyOp>()) {
+    // From UseKeyOp - use its rotation key (which was assigned from a LoadKeyOp)
+    std::string varName = variableNames->getNameForValue(useOp.getRotKey());
+    if (varName.empty() || (varName.find_first_not_of("0123456789") == std::string::npos)) {
+      varName = "rk" + std::to_string(variableNames->getIntForValue(useOp.getRotKey()));
     }
+    os << varName;
+  } else if (auto assumeOp = evalKey.getDefiningOp<kmrt::AssumeLoadedOp>()) {
+    // From AssumeLoadedOp - use its index operand
+    os << variableNames->getNameForValue(assumeOp.getIndex());
+  } else {
+    // From control flow (scf.if, etc.) - use the RotKey variable directly
+    std::string varName = variableNames->getNameForValue(evalKey);
+    if (varName.empty() || (varName.find_first_not_of("0123456789") == std::string::npos)) {
+      varName = "rk" + std::to_string(variableNames->getIntForValue(evalKey));
+    }
+    os << varName;
   }
 
   os << ");\n";
-
   emitLogRotWithSSA(op.getCiphertext());
   emitLogCTWithSSA(op.getResult());
   return success();
@@ -715,49 +955,133 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotOp op) {
 
 // KMRT ops implementations
 LogicalResult OpenFhePkeEmitter::printOperation(kmrt::LoadKeyOp op) {
-  // Get rotation index from the operation's index operand
+  // Emit the rotation key variable assignment with deserializeKey returning the key
+  Value rotKey = op.getRotKey();
+
+  // Check if the value has a name assigned
+  if (!variableNames->contains(rotKey)) {
+    return emitError(op->getLoc(), "Rotation key result has no variable name assigned");
+  }
+
+  std::string varName = variableNames->getNameForValue(rotKey);
+
+  // Workaround: SelectVariableNames sometimes assigns empty/invalid names to rotation keys
+  // If we get an empty name or a name that looks like a number, use a fallback based on the value's unique ID
+  if (varName.empty() || (varName.length() < 2 && std::isdigit(varName[0]))) {
+    varName = "rk" + std::to_string(variableNames->getIntForValue(rotKey));
+  }
+
+  // Check if this is a mutable value (e.g., yielded from scf.if)
+  if (!mutableValues.contains(rotKey)) {
+    // Emit type declaration
+    if (failed(emitType(rotKey.getType(), op->getLoc(), false))) {
+      return failure();
+    }
+    os << " ";
+  }
+
+  // Emit variable name
+  os << varName << " = keymem_rt.deserializeKey(";
+
   auto indexValue = op.getIndex();
   if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
     if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-      auto rotationIndex = intAttr.getInt();
-
-      // Check if we have a key_depth attribute
-      if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
-        int64_t depth = depthAttr.getInt();
-        if (depth > 0) {
-          os << "keymem_rt.deserializeKey(" << rotationIndex << ", " << depth
-             << ");\n";
-        } else {
-          os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
-        }
-      } else {
-        os << "keymem_rt.deserializeKey(" << rotationIndex << ");\n";
-      }
+      os << intAttr.getInt();
     }
+  } else {
+    os << variableNames->getNameForValue(indexValue);
   }
+
+  if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
+    os << ", " << depthAttr.getInt();
+  } else if (auto levelAttr = op->getAttrOfType<IntegerAttr>("key_level")) {
+    os << ", " << levelAttr.getInt();
+  }
+
+  os << ");\n";
+
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(kmrt::UseKeyOp op) {
+  // use_key just converts static rotation key to dynamic
+  // In C++, we just assign the index value from the input key
+  if (failed(emitTypedAssignPrefix(op.getRotKey(), op->getLoc(), false))) {
+    return failure();
+  }
+
+  auto inputKey = op.getInputKey();
+
+  // Try to get the index from the input key's defining operation
+  if (auto loadOp = inputKey.getDefiningOp<kmrt::LoadKeyOp>()) {
+    // If it comes from a LoadKeyOp, use its index value
+    auto indexValue = loadOp.getIndex();
+    if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+        os << intAttr.getInt();
+      }
+    } else {
+      os << variableNames->getNameForValue(indexValue);
+    }
+  } else if (auto useOp = inputKey.getDefiningOp<kmrt::UseKeyOp>()) {
+    // If it comes from another UseKeyOp, recursively get its value
+    os << variableNames->getNameForValue(useOp.getRotKey());
+  } else if (auto assumeOp = inputKey.getDefiningOp<kmrt::AssumeLoadedOp>()) {
+    // If it comes from an AssumeLoadedOp, use its index value
+    auto indexValue = assumeOp.getIndex();
+    if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+        os << intAttr.getInt();
+      }
+    } else {
+      os << variableNames->getNameForValue(indexValue);
+    }
+  } else {
+    // Otherwise use the SSA value name
+    os << variableNames->getNameForValue(inputKey);
+  }
+
+  os << ";\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(kmrt::AssumeLoadedOp op) {
+  // assume_loaded creates a reference to a key that's already in memory
+  // In C++, we just assign the index value (similar to LoadKeyOp)
+  auto indexValue = op.getIndex();
+
+  // Emit the assignment for the rotation key index variable
+  if (failed(emitTypedAssignPrefix(op.getRotKey(), op->getLoc(), false))) {
+    return failure();
+  }
+
+  // Store the index value
+  if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+      os << intAttr.getInt();
+    }
+  } else {
+    // Dynamic index - use the SSA variable name
+    os << variableNames->getNameForValue(indexValue);
+  }
+
+  os << ";\n";
   return success();
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(kmrt::ClearKeyOp op) {
   // Get the rotation key that's being cleared
   auto rotKey = op.getRotKey();
-  if (auto loadOp = rotKey.getDefiningOp<kmrt::LoadKeyOp>()) {
-    auto indexValue = loadOp.getIndex();
 
-    os << "keymem_rt.clearKey(";
+  std::string varName = variableNames->getNameForValue(rotKey);
 
-    // Check if we have a constant index
-    if (auto constOp = indexValue.getDefiningOp<mlir::arith::ConstantOp>()) {
-      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-        os << intAttr.getInt();
-      }
-    } else {
-      // Dynamic index - use the SSA variable name
-      os << variableNames->getNameForValue(indexValue);
-    }
-
-    os << ");\n";
+  // Workaround: SelectVariableNames sometimes assigns empty/invalid names to rotation keys
+  // If we get an empty name or a name that looks like a number, use a fallback based on the value's unique ID
+  if (varName.empty() || (varName.length() < 2 && std::isdigit(varName[0]))) {
+    varName = "rk" + std::to_string(variableNames->getIntForValue(rotKey));
   }
+
+  os << "keymem_rt.clearKey(" << varName << ");\n";
   return success();
 }
 
@@ -987,6 +1311,10 @@ LogicalResult OpenFhePkeEmitter::printBinaryOp(Operation *op, ::mlir::Value lhs,
 // Lowerings of ops like affine.apply involve scalar cleartext types
 LogicalResult OpenFhePkeEmitter::printOperation(arith::AddIOp op) {
   return printBinaryOp(op, op.getLhs(), op.getRhs(), "+");
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(arith::AndIOp op) {
+  return printBinaryOp(op, op.getLhs(), op.getRhs(), "&");
 }
 
 LogicalResult OpenFhePkeEmitter::printOperation(arith::MulIOp op) {
@@ -1812,10 +2140,22 @@ LogicalResult OpenFhePkeEmitter::printOperation(RotInPlaceOp op) {
   // Emit self-assignment: ciphertext = cc->EvalRotate(ciphertext, index);
   auto ciphertextName = variableNames->getNameForValue(op.getCiphertext());
   auto contextName = variableNames->getNameForValue(op.getCryptoContext());
-  auto rotationIndex = op.getEvalKey().getType().getRotationIndex();
 
   os << ciphertextName << " = " << contextName << "->EvalRotate("
-     << ciphertextName << ", " << rotationIndex << ");\n";
+     << ciphertextName << ", ";
+
+  // Get rotation index - either from the type (static) or from the rotation key
+  // SSA value
+  auto evalKeyType = cast<kmrt::RotKeyType>(op.getEvalKey().getType());
+  if (evalKeyType.isStatic()) {
+    // Static rotation index baked into the type
+    os << evalKeyType.getStaticIndex();
+  } else {
+    // Dynamic rotation - the rotation key SSA value holds the index
+    os << variableNames->getNameForValue(op.getEvalKey());
+  }
+
+  os << ");\n";
 
   os << "LOG_CT(" << ciphertextName << ");\n";
   return success();

@@ -45,7 +45,18 @@ def KMRT_RotKeyType : KMRT_Type<"RotKey", "rot_key"> {
   let parameters = (ins OptionalParameter<"std::optional<int64_t>", "std::nullopt">:$rotation_index);
   let asmName = "rk";
 
+  // extraClassDeclaration in derived type replaces base class, so we must include OpAsmTypeInterface methods
   let extraClassDeclaration = [{
+    // OpAsmTypeInterface method
+    void getAsmName(::mlir::OpAsmSetNameFn setNameFn) const {
+      setNameFn("rk");
+    }
+
+    ::mlir::OpAsmDialectInterface::AliasResult getAlias(::llvm::raw_ostream &os) const {
+      os << "rk";
+      return ::mlir::OpAsmDialectInterface::AliasResult::FinalAlias;
+    }
+
     // Check if this is a static constant rotation key
     bool isStatic() const {
       return getRotationIndex().has_value();

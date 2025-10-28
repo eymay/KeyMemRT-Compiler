@@ -18,7 +18,7 @@
 #ciphertext_space_L0_ = #lwe.ciphertext_space<ring = #ring_rns_L0_1_x32_, encryption_type = lsb>
 
 !cc = !openfhe.crypto_context
-!ek = !openfhe.eval_key
+!ek = !openfhe.eval_key<>
 
 !pt = !lwe.new_lwe_plaintext<application_data = <message_type = i3>, plaintext_space = #plaintext_space>
 !ct = !lwe.new_lwe_ciphertext<application_data = <message_type = i3>, plaintext_space = #plaintext_space, ciphertext_space = #ciphertext_space_L0_, key = #key, modulus_chain = #modulus_chain_L5_C0_>
@@ -87,7 +87,7 @@ module attributes {scheme.bgv} {
 #ciphertext_space_L0_ = #lwe.ciphertext_space<ring = #ring_rns_L0_1_x32_, encryption_type = lsb>
 
 !cc = !openfhe.crypto_context
-!ek = !openfhe.eval_key
+!ek = !openfhe.eval_key<>
 
 !tensor_pt_ty = !lwe.new_lwe_plaintext<application_data = <message_type = tensor<32xi16>>, plaintext_space = #plaintext_space>
 !scalar_pt_ty = !lwe.new_lwe_plaintext<application_data = <message_type = i16>, plaintext_space = #plaintext_space>
@@ -379,5 +379,65 @@ module attributes {scheme.ckks} {
     %cst = arith.constant dense<1.000000e-01> : tensor<32xf32>
     %result = tensor.extract_slice %cst[8] [8] [1] : tensor<32xf32> to tensor<8xf32>
     return %result : tensor<8xf32>
+  }
+}
+
+// -----
+
+!Z1095233372161_i64_ = !mod_arith.int<1095233372161 : i64>
+!Z65537_i64_ = !mod_arith.int<65537 : i64>
+
+!rns_L0_ = !rns.rns<!Z1095233372161_i64_>
+
+#ring_Z65537_i64_1_x32_ = #polynomial.ring<coefficientType = !Z65537_i64_, polynomialModulus = <1 + x**32>>
+#ring_rns_L0_1_x32_ = #polynomial.ring<coefficientType = !rns_L0_, polynomialModulus = <1 + x**32>>
+
+#full_crt_packing_encoding = #lwe.full_crt_packing_encoding<scaling_factor = 0>
+#key = #lwe.key<>
+
+#modulus_chain_L5_C0_ = #lwe.modulus_chain<elements = <1095233372161 : i64, 1032955396097 : i64, 1005037682689 : i64, 998595133441 : i64, 972824936449 : i64, 959939837953 : i64>, current = 0>
+
+#plaintext_space = #lwe.plaintext_space<ring = #ring_Z65537_i64_1_x32_, encoding = #full_crt_packing_encoding>
+
+#ciphertext_space_L0_ = #lwe.ciphertext_space<ring = #ring_rns_L0_1_x32_, encryption_type = lsb>
+
+!cc = !openfhe.crypto_context
+!ct = !lwe.new_lwe_ciphertext<application_data = <message_type = i3>, plaintext_space = #plaintext_space, ciphertext_space = #ciphertext_space_L0_, key = #key, modulus_chain = #modulus_chain_L5_C0_>
+!rk = !kmrt.rot_key<>
+
+// CHECK: size_t test_kmrt_ops() {
+// CHECK-NEXT:      [[maybe_unused]] size_t [[idx1:.*]] = 1;
+// CHECK-NEXT:      [[maybe_unused]] size_t [[idx2:.*]] = 2;
+// CHECK-NEXT:      RotKey [[rk1:.*]] = keymem_rt.deserializeKey(1);
+// CHECK-NEXT:      keymem_rt.clearKey([[rk1]]);
+// CHECK-NEXT:      RotKey [[rk2:.*]] = keymem_rt.deserializeKey(2, 2);
+// CHECK-NEXT:      keymem_rt.clearKey([[rk2]]);
+// CHECK-NEXT:      return [[idx2]];
+// CHECK-NEXT:  }
+module attributes {scheme.ckks} {
+  func.func @test_kmrt_ops() -> index {
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %rk1 = kmrt.load_key %c1 : index -> !rk
+    kmrt.clear_key %rk1 : !rk
+    %rk2 = kmrt.load_key %c2 { key_depth = 2 : i64 } : index -> !rk
+    kmrt.clear_key %rk2 : !rk
+    return %c2 : index
+  }
+}
+
+// -----
+
+// CHECK: bool test_andi(
+// CHECK-SAME:    bool [[ARG1:[^,]*]],
+// CHECK-SAME:    bool [[ARG2:[^)]*]]
+// CHECK-SAME:  ) {
+// CHECK-NEXT:      bool [[v0:.*]] = [[ARG1]] & [[ARG2]];
+// CHECK-NEXT:      return [[v0]];
+// CHECK-NEXT:  }
+module attributes {scheme.bgv} {
+  func.func @test_andi(%arg0: i1, %arg1: i1) -> i1 {
+    %0 = arith.andi %arg0, %arg1 : i1
+    return %0 : i1
   }
 }

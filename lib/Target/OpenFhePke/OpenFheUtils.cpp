@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "lib/Dialect/KMRT/IR/KMRTTypes.h"
 #include "lib/Dialect/LWE/IR/LWETypes.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheTypes.h"
 #include "lib/Target/OpenFhePke/OpenFhePkeTemplates.h"
@@ -59,6 +60,8 @@ FailureOr<std::string> convertType(Type type, Location loc, bool constant) {
           [&](auto ty) { return std::string("PrivateKeyT"); })
       .Case<openfhe::PublicKeyType>(
           [&](auto ty) { return std::string("PublicKeyT"); })
+      .Case<kmrt::RotKeyType>(
+          [&](auto ty) { return std::string("RotKey"); })
       .Case<IndexType>([&](auto ty) { return std::string("size_t"); })
       .Case<IntegerType>([&](auto ty) -> FailureOr<std::string> {
         auto width = ty.getWidth();

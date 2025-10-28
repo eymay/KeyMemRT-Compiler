@@ -66,6 +66,10 @@ test_suite(
         "//tests/Dialect/KMRT/Transforms:key_prefetching_bsgs.mlir.test",
         "//tests/Dialect/KMRT/Transforms:key_prefetching_index_type.mlir.test",
         "//tests/Dialect/KMRT/Transforms:key_prefetching_constant.mlir.test",
+
+        # KMRT emitter tests
+        "//tests/Dialect/KMRT/Emitters:emit_kmrt_rotation_keys.mlir.test",
+
         # CKKS tests
         # "//tests/Dialect/CKKS:keymemrt_encoding.mlir.test",
         

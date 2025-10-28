@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "lib/Dialect/KMRT/IR/KMRTDialect.h"
 #include "lib/Dialect/LWE/IR/LWEDialect.h"
 #include "lib/Dialect/ModArith/IR/ModArithDialect.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheDialect.h"
@@ -19,6 +20,7 @@
 #include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"   // from @llvm-project
+#include "mlir/include/mlir/Dialect/SCF/IR/SCF.h"        // from @llvm-project
 #include "mlir/include/mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/DialectRegistry.h"        // from @llvm-project
 #include "mlir/include/mlir/IR/Operation.h"              // from @llvm-project
@@ -81,12 +83,12 @@ void registerToOpenFhePkeTranslation() {
                                      options->weightsFile);
       },
       [](DialectRegistry &registry) {
-        registry.insert<arith::ArithDialect, func::FuncDialect,
-                        openfhe::OpenfheDialect, lwe::LWEDialect,
-                        tensor_ext::TensorExtDialect,
-                        ::mlir::heir::polynomial::PolynomialDialect,
-                        tensor::TensorDialect, mod_arith::ModArithDialect,
-                        rns::RNSDialect, affine::AffineDialect>();
+        registry.insert<
+            arith::ArithDialect, func::FuncDialect, openfhe::OpenfheDialect,
+            lwe::LWEDialect, kmrt::KMRTDialect, tensor_ext::TensorExtDialect,
+            ::mlir::heir::polynomial::PolynomialDialect, tensor::TensorDialect,
+            mod_arith::ModArithDialect, rns::RNSDialect, affine::AffineDialect,
+            scf::SCFDialect>();
         rns::registerExternalRNSTypeInterfaces(registry);
       });
 }
@@ -104,9 +106,9 @@ void registerToOpenFhePkeHeaderTranslation() {
         registry.insert<arith::ArithDialect, affine::AffineDialect,
                         func::FuncDialect, tensor::TensorDialect,
                         tensor_ext::TensorExtDialect, openfhe::OpenfheDialect,
-                        lwe::LWEDialect, rns::RNSDialect,
+                        lwe::LWEDialect, kmrt::KMRTDialect, rns::RNSDialect,
                         ::mlir::heir::polynomial::PolynomialDialect,
-                        mod_arith::ModArithDialect>();
+                        mod_arith::ModArithDialect, scf::SCFDialect>();
         rns::registerExternalRNSTypeInterfaces(registry);
       });
 }
@@ -125,7 +127,8 @@ void registerToOpenFhePkePybindTranslation() {
       [](DialectRegistry &registry) {
         registry.insert<arith::ArithDialect, func::FuncDialect,
                         tensor::TensorDialect, openfhe::OpenfheDialect,
-                        lwe::LWEDialect, tensor_ext::TensorExtDialect,
+                        lwe::LWEDialect, kmrt::KMRTDialect,
+                        tensor_ext::TensorExtDialect,
                         ::mlir::heir::polynomial::PolynomialDialect,
                         mod_arith::ModArithDialect, rns::RNSDialect>();
         rns::registerExternalRNSTypeInterfaces(registry);
