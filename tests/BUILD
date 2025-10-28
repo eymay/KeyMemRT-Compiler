@@ -52,7 +52,20 @@ test_suite(
         # Lower linear transform tests
         "//tests/Transforms/lower_linear_transform:test_linear_transform.mlir.test",
         "//tests/Transforms/symbolic_bsgs_decomposition:test_symbolic_bsgs_decomposition.mlir.test",
-        
+
+        # KMRT tests
+        "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_basic.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_bsgs.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_preloop.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_postloop.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_prepost.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_bootstrap.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:configure_crypto_context_bsgs.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:key_prefetching_trivial.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:key_prefetching_affine.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:key_prefetching_bsgs.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:key_prefetching_index_type.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:key_prefetching_constant.mlir.test",
         # CKKS tests
         # "//tests/Dialect/CKKS:keymemrt_encoding.mlir.test",
         

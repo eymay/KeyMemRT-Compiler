@@ -254,6 +254,7 @@ int main(int argc, char **argv) {
 
   // Custom passes in HEIR
   cggi::registerCGGIPasses();
+  kmrt::registerKMRTPasses();
   lattigo::registerLattigoPasses();
   lwe::registerLWEPasses();
   mgmt::registerMgmtPasses();
