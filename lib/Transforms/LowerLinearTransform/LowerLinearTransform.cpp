@@ -111,8 +111,8 @@ class LowerLinearTransformPattern
 
   // Helper to extract a single diagonal from the weight matrix
   Value extractDiagonal(PatternRewriter &rewriter, Location loc, Value weights,
-                        int32_t diagonalIdx, int32_t slots,
-                        int64_t targetScale) const {
+                        int32_t diagonalIdx, int32_t slots, int64_t targetScale,
+                        Value cryptoContext) const {
     llvm::dbgs() << "  extractDiagonal called for diagonal " << diagonalIdx
                  << "\n";
 
@@ -177,8 +177,8 @@ class LowerLinearTransformPattern
     auto ptType =
         lwe::NewLWEPlaintextType::get(rewriter.getContext(), appData, ptSpace);
 
-    Value encodedDiagonal = rewriter.create<lwe::RLWEEncodeOp>(
-        loc, ptType, diagonalTensor, encoding, ring);
+    Value encodedDiagonal = rewriter.create<openfhe::MakeCKKSPackedPlaintextOp>(
+        loc, ptType, cryptoContext, diagonalTensor);
 
     llvm::dbgs() << "  Successfully extracted and encoded diagonal "
                  << diagonalIdx << " with scale " << targetScale << "\n";
@@ -212,11 +212,15 @@ class LowerLinearTransformPattern
       Value rotKey = nullptr;
 
       if (i > 0) {
-        // Step 1a: Deserialize the rotation key
+        // Step 1a: Create constant for rotation index and load key
+        Value rotIndexValue = rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(i));
+
+        // Create static rotation key type with the constant index
         auto rotKeyType = kmrt::RotKeyType::get(rewriter.getContext(), i);
 
         rotKey =
-            rewriter.create<kmrt::LoadKeyOp>(loc, rotKeyType, cryptoContext);
+            rewriter.create<kmrt::LoadKeyOp>(loc, rotKeyType, rotIndexValue);
 
         // Step 1b: Perform rotation
         rotatedInput = rewriter.create<openfhe::RotOp>(
@@ -229,7 +233,7 @@ class LowerLinearTransformPattern
 
       // Step 2: Extract and encode diagonal
       Value diagonal = extractDiagonal(rewriter, loc, weightsPlaintext, i,
-                                       slots, weightsScale);
+                                       slots, weightsScale, cryptoContext);
 
       // Step 3: Multiply
       Value mulResult = rewriter.create<openfhe::MulPlainOp>(
@@ -276,7 +280,7 @@ class LowerLinearTransformPattern
 
     // First iteration (i=0): no rotation, initialize accumulator
     Value diagonal0 = extractDiagonal(rewriter, loc, weightsPlaintext, 0, slots,
-                                      weightsScale);
+                                      weightsScale, cryptoContext);
     Value mulResult0 = rewriter.create<openfhe::MulPlainOp>(
         loc, inputCiphertext.getType(), cryptoContext, inputCiphertext,
         diagonal0);
@@ -299,26 +303,25 @@ class LowerLinearTransformPattern
         [&](OpBuilder &builder, Location loc, Value iv, ValueRange iterArgs) {
           Value currentAccum = iterArgs[0];
 
-          // Convert affine index to i32 for rotation offset
-          auto ivIndex = builder.create<affine::AffineApplyOp>(
-              loc, AffineMap::get(1, 0, builder.getAffineDimExpr(0)),
-              ValueRange{iv});
-          auto ivI64 = builder.create<arith::IndexCastOp>(
-              loc, builder.getI64Type(), ivIndex);
+          // Step 1a: Load rotation key directly using the induction variable
+          // The type is dynamic (!kmrt.rot_key) since iv is runtime-determined
+          auto rotKeyType =
+              kmrt::RotKeyType::get(builder.getContext(), std::nullopt);
 
-          // Step 1a: Deserialize rotation key
-          auto rotKeyType = kmrt::RotKeyType::get(builder.getContext(), 0);
+          Value rotKey = builder.create<kmrt::LoadKeyOp>(loc, rotKeyType, iv);
 
-          Value rotKey =
-              builder.create<kmrt::LoadKeyOp>(loc, rotKeyType, ivI64);
-
-          // Step 1b: Rotate input by i
+          // Step 1b: Rotate input by iv
           Value rotatedInput = builder.create<openfhe::RotOp>(
               loc, inputCiphertext.getType(), cryptoContext, inputCiphertext,
               rotKey);
 
           // Step 1c: Clear the rotation key immediately after rotation
           builder.create<kmrt::ClearKeyOp>(loc, rotKey);
+
+          // For extracting the diagonal, we still need the index value
+          auto ivIndex = builder.create<affine::AffineApplyOp>(
+              loc, AffineMap::get(1, 0, builder.getAffineDimExpr(0)),
+              ValueRange{iv});
 
           // Step 2: Extract diagonal i from weight matrix
           auto slotType = builder.getF64Type();
@@ -346,15 +349,15 @@ class LowerLinearTransformPattern
           auto ptSpace = lwe::PlaintextSpaceAttr::get(builder.getContext(),
                                                       ring, encoding);
 
-          auto noOverflowAttr = lwe::NoOverflowAttr::get(builder.getContext());
+          auto noOverflowAttr = lwe::NoOverflowAttr::get(rewriter.getContext());
           auto appData =
               lwe::ApplicationDataAttr::get(diagonalTensorType, noOverflowAttr);
-
-          auto ptType = lwe::NewLWEPlaintextType::get(builder.getContext(),
+          auto ptType = lwe::NewLWEPlaintextType::get(rewriter.getContext(),
                                                       appData, ptSpace);
 
-          Value encodedDiagonal = builder.create<lwe::RLWEEncodeOp>(
-              loc, ptType, diagonalTensor, encoding, ring);
+          Value encodedDiagonal =
+              builder.create<openfhe::MakeCKKSPackedPlaintextOp>(
+                  loc, ptType, cryptoContext, diagonalTensor);
 
           // Step 4: Multiply
           Value mulResult = builder.create<openfhe::MulPlainOp>(

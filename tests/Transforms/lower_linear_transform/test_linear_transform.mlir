@@ -44,12 +44,12 @@ func.func @linear_transform(%cc: !cc, %ct: !ct_L5) -> !ct_L5 {
       [15.0, 15.0, 15.0, 15.0],
       [16.0, 16.0, 16.0, 16.0]
     ]> : tensor<16x4xf64>
-    // CHECK: lwe.rlwe_encode
+    // CHECK: openfhe.make_ckks_packed_plaintext
     // CHECK: openfhe.mul_plain
     // CHECK: affine.for
-    // CHECK:   openfhe.deserialize_key_dynamic
+    // CHECK:   kmrt.load_key
     // CHECK:   openfhe.rot
-    // CHECK:   openfhe.clear_key
+    // CHECK:   kmrt.clear_key
     // CHECK:   openfhe.mul_plain
     // CHECK:   openfhe.add
     %ct_0 = openfhe.linear_transform %cc, %ct, %cst {diagonal_count = 16 : i32, slots = 4 : i32} : (!ct_L5, tensor<16x4xf64>) -> !ct_L5
