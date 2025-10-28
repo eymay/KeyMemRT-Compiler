@@ -11,7 +11,9 @@ cc_library(
     hdrs = ["BootstrapRotationAnalysis.h"],
     deps = [
         ":pass_inc_gen",
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",

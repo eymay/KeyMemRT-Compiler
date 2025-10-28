@@ -60,7 +60,7 @@
 #include "lib/Transforms/AnnotateModule/AnnotateModule.h"
 #include "lib/Transforms/AnnotateSecretness/AnnotateSecretness.h"
 #include "lib/Transforms/ApplyFolders/ApplyFolders.h"
-// #include "lib/Transforms/BootstrapRotationAnalysis/BootstrapRotationAnalysis.h"  // Uses old openfhe ops
+#include "lib/Transforms/BootstrapRotationAnalysis/BootstrapRotationAnalysis.h"
 #include "lib/Transforms/ConvertIfToSelect/ConvertIfToSelect.h"
 #include "lib/Transforms/ConvertSecretExtractToStaticExtract/ConvertSecretExtractToStaticExtract.h"
 #include "lib/Transforms/ConvertSecretForToStaticFor/ConvertSecretForToStaticFor.h"
@@ -300,7 +300,7 @@ int main(int argc, char **argv) {
   // registerRotationDepthAnalysisPasses();  // Uses old openfhe ops
   // registerKeyCompressionPasses();  // Uses old openfhe ops
   registerLowerLinearTransformPasses();
-  // registerBootstrapRotationAnalysisPasses();  // Uses old openfhe ops
+  registerBootstrapRotationAnalysisPasses();
   registerFHEFunctionOutliningPasses();
   registerProfileAnnotatorPasses();
   // registerMemoryEstimationPasses();  // Uses old openfhe ops

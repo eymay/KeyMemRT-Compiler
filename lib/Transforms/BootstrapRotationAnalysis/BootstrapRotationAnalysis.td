@@ -28,7 +28,11 @@ def BootstrapRotationAnalysis : Pass<"bootstrap-rotation-analysis"> {
     - Bootstrap performance optimization
   }];
   
-  let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
+  let dependentDialects = [
+    "mlir::heir::kmrt::KMRTDialect",
+    "mlir::heir::openfhe::OpenfheDialect",
+    "mlir::arith::ArithDialect"
+  ];
 }
 
 #endif  // LIB_TRANSFORMS_BOOTSTRAP_ROTATION_ANALYSIS_TD_

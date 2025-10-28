@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
+#include <string>
 #include <vector>
 
+#include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "llvm/include/llvm/Support/Debug.h"
+#include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/include/mlir/IR/Builders.h"
 #include "mlir/include/mlir/IR/BuiltinAttributes.h"
@@ -15,6 +19,167 @@
 
 namespace mlir {
 namespace heir {
+
+class BootstrapKeyConfigRegistry {
+ public:
+  using KeyLevelMap = std::map<int32_t, int>;
+  using ConfigKey =
+      std::pair<uint32_t, uint32_t>;  // {encode_budget, decode_budget}
+
+ private:
+  static std::map<ConfigKey, KeyLevelMap> configurations;
+
+ public:
+  // Register a new configuration
+  static void registerConfiguration(uint32_t encodeBudget,
+                                    uint32_t decodeBudget,
+                                    const KeyLevelMap& keyLevels) {
+    ConfigKey key = {encodeBudget, decodeBudget};
+    configurations[key] = keyLevels;
+    llvm::dbgs() << "Registered bootstrap key configuration {" << encodeBudget
+                 << "," << decodeBudget << "} with " << keyLevels.size()
+                 << " key mappings\n";
+  }
+
+  // Check if a configuration exists
+  static bool hasConfiguration(uint32_t encodeBudget, uint32_t decodeBudget) {
+    ConfigKey key = {encodeBudget, decodeBudget};
+    return configurations.find(key) != configurations.end();
+  }
+
+  // Get level for a rotation index in a specific configuration
+  static int getLevel(uint32_t encodeBudget, uint32_t decodeBudget,
+                      int32_t rotationIndex) {
+    ConfigKey key = {encodeBudget, decodeBudget};
+    auto configIt = configurations.find(key);
+    if (configIt == configurations.end()) {
+      return -1;  // Configuration not found
+    }
+
+    auto levelIt = configIt->second.find(rotationIndex);
+    return (levelIt != configIt->second.end()) ? levelIt->second : -1;
+  }
+
+  // Check if a rotation index has a predefined level in a configuration
+  static bool hasLevel(uint32_t encodeBudget, uint32_t decodeBudget,
+                       int32_t rotationIndex) {
+    return getLevel(encodeBudget, decodeBudget, rotationIndex) != -1;
+  }
+
+  // Get all rotation indices for a configuration
+  static std::vector<int32_t> getRotationIndices(uint32_t encodeBudget,
+                                                 uint32_t decodeBudget) {
+    ConfigKey key = {encodeBudget, decodeBudget};
+    auto configIt = configurations.find(key);
+    if (configIt == configurations.end()) {
+      return {};
+    }
+
+    std::vector<int32_t> indices;
+    for (const auto& entry : configIt->second) {
+      indices.push_back(entry.first);
+    }
+    return indices;
+  }
+
+  // Get level distribution for a configuration
+  static std::map<int, int> getLevelDistribution(uint32_t encodeBudget,
+                                                 uint32_t decodeBudget) {
+    ConfigKey key = {encodeBudget, decodeBudget};
+    auto configIt = configurations.find(key);
+    if (configIt == configurations.end()) {
+      return {};
+    }
+
+    std::map<int, int> distribution;
+    for (const auto& entry : configIt->second) {
+      distribution[entry.second]++;
+    }
+    return distribution;
+  }
+
+  // Get configuration key as string for logging
+  static std::string getConfigString(uint32_t encodeBudget,
+                                     uint32_t decodeBudget) {
+    return "{" + std::to_string(encodeBudget) + "," +
+           std::to_string(decodeBudget) + "}";
+  }
+};
+
+std::map<BootstrapKeyConfigRegistry::ConfigKey,
+         BootstrapKeyConfigRegistry::KeyLevelMap>
+    BootstrapKeyConfigRegistry::configurations;
+
+// Configuration initializer - this is where you add new configurations
+class BootstrapKeyConfigInitializer {
+ public:
+  static void initializeConfigurations() {
+    // {3,3} Level Budget Configuration
+    // Based on analysis showing bootstrap levels start from same low levels
+    // due to modulus extension behavior
+    BootstrapKeyConfigRegistry::KeyLevelMap config_3_3 = {
+        // Level 2 keys
+        {16384, 2},
+        {2048, 2},
+        {3072, 2},
+        {4096, 2},
+        {5120, 2},
+        {6144, 2},
+        {7168, 2},
+        {8192, 2},
+        {9216, 2},
+        {10240, 2},
+        {11264, 2},
+        {12288, 2},
+        {13312, 2},
+        {14336, 2},
+        {15360, 2},
+
+        // Level 3 keys (higher resolution rotations)
+        {512, 3},
+        {1024, 3},
+        {1536, 3},
+        {31776, 3},
+        {31808, 3},
+        {31840, 3},
+        {31872, 3},
+        {31904, 3},
+        {31936, 3},
+        {31968, 3},
+        {32000, 3},
+        {32032, 3},
+        {32064, 3},
+        {32096, 3},
+        {32128, 3},
+        {32160, 3},
+        {32192, 3},
+        {32224, 3},
+        {32256, 3},
+
+        // Level 4 keys (finest granularity rotations)
+        {16, 4},
+        {32, 4},
+        {48, 4},
+        {32737, 4},
+        {32738, 4},
+        {32739, 4},
+        {32740, 4},
+        {32741, 4},
+        {32742, 4},
+        {32743, 4},
+        {32744, 4},
+        {32745, 4},
+        {32746, 4},
+        {32747, 4},
+        {32748, 4},
+        {32749, 4},
+        {32750, 4},
+        {32751, 4},
+        {32752, 4}};
+
+    BootstrapKeyConfigRegistry::registerConfiguration(3, 3, config_3_3);
+  }
+};
 
 // Bootstrap utilities (from the provided code)
 struct BootstrapParams {
@@ -285,6 +450,17 @@ std::vector<int32_t> CalculateBootstrapRotationIndices(
   if (adjustedBudget[1] > logSlots) adjustedBudget[1] = logSlots;
   if (adjustedBudget[1] < 1) adjustedBudget[1] = 1;
 
+  if (BootstrapKeyConfigRegistry::hasConfiguration(adjustedBudget[0],
+                                                   adjustedBudget[1])) {
+    std::string configStr = BootstrapKeyConfigRegistry::getConfigString(
+        adjustedBudget[0], adjustedBudget[1]);
+    llvm::dbgs() << "Using pre-analyzed bootstrap key levels for " << configStr
+                 << " configuration\n";
+    return BootstrapKeyConfigRegistry::getRotationIndices(adjustedBudget[0],
+                                                          adjustedBudget[1]);
+  }
+  llvm::dbgs()
+      << "No pre-analyzed configuration found, using algorithmic calculation\n";
   BootstrapParams encParams =
       GetCollapsedFFTParams(slots, adjustedBudget[0], dim1[0]);
   BootstrapParams decParams =
@@ -301,6 +477,11 @@ struct BootstrapRotationAnalysis
     : impl::BootstrapRotationAnalysisBase<BootstrapRotationAnalysis> {
   void runOnOperation() override {
     Operation* op = getOperation();
+    static bool initialized = false;
+    if (!initialized) {
+      BootstrapKeyConfigInitializer::initializeConfigurations();
+      initialized = true;
+    }
 
     // Find SetupBootstrapOp to extract parameters
     openfhe::SetupBootstrapOp setupOp = nullptr;
@@ -383,11 +564,16 @@ struct BootstrapRotationAnalysis
       bootstrapOps.push_back(bootstrapOp);
       return WalkResult::advance();
     });
+    bool hasPreAnalyzedConfig = BootstrapKeyConfigRegistry::hasConfiguration(
+        levelBudget[0], levelBudget[1]);
+    std::string configStr = BootstrapKeyConfigRegistry::getConfigString(
+        levelBudget[0], levelBudget[1]);
 
     // Process each bootstrap operation
     for (auto bootstrapOp : bootstrapOps) {
       transformBootstrapOp(bootstrapOp, rotationIndices, rotationIndicesAttr,
-                           slots, cyclotomicOrder, builder);
+                           slots, cyclotomicOrder, builder, levelBudget[0],
+                           levelBudget[1], hasPreAnalyzedConfig);
     }
 
     op->walk([&](openfhe::GenRotKeyOp genRotKeyOp) {
@@ -426,68 +612,65 @@ struct BootstrapRotationAnalysis
 
     // Print summary
     llvm::dbgs() << "Bootstrap Rotation Analysis:\n";
-    llvm::dbgs() << "  Slots: " << slots << "\n";
-    llvm::dbgs() << "  Cyclotomic Order: " << cyclotomicOrder << "\n";
-    llvm::dbgs() << "  Level Budget: [" << levelBudget[0] << ", "
-                 << levelBudget[1] << "]\n";
-    llvm::dbgs() << "  Dim1: [" << dim1[0] << ", " << dim1[1] << "]\n";
+    llvm::dbgs() << "  Configuration: " << configStr << "\n";
+    if (hasPreAnalyzedConfig) {
+      llvm::dbgs() << "  Using pre-analyzed bootstrap key levels\n";
+      auto distribution = BootstrapKeyConfigRegistry::getLevelDistribution(
+          levelBudget[0], levelBudget[1]);
+      for (const auto& entry : distribution) {
+        llvm::dbgs() << "    Level " << entry.first << ": " << entry.second
+                     << " keys\n";
+      }
+    } else {
+      llvm::dbgs() << "  Using algorithmic calculation\n";
+    }
     llvm::dbgs() << "  Total Rotation Indices: " << rotationIndices.size()
                  << "\n";
     llvm::dbgs() << "  Processed " << bootstrapOps.size()
                  << " bootstrap operations\n";
-
-    // Count and report GenBootstrapKeyOp operations
-    size_t genBootstrapKeyOpCount = 0;
-    op->walk([&](openfhe::GenBootstrapKeyOp genBootstrapKeyOp) {
-      genBootstrapKeyOpCount++;
-      return WalkResult::advance();
-    });
-    llvm::dbgs() << "  Added rotation indices to " << genBootstrapKeyOpCount
-                 << " GenBootstrapKeyOp operations\n";
-
-    // Print first few indices for debugging
-    llvm::dbgs() << "  First 10 indices: [";
-    for (size_t i = 0;
-         i < std::min(static_cast<size_t>(10), rotationIndices.size()); ++i) {
-      if (i > 0) llvm::dbgs() << ", ";
-      llvm::dbgs() << rotationIndices[i];
-    }
-    if (rotationIndices.size() > 10) {
-      llvm::dbgs() << ", ...";
-    }
-    llvm::dbgs() << "]\n";
   }
 
  private:
-  // Transform a bootstrap operation to include key deserialization and clearing
+  // Transform a bootstrap operation to include key loading and clearing
   void transformBootstrapOp(openfhe::BootstrapOp bootstrapOp,
                             const std::vector<int32_t>& rotationIndices,
                             ArrayAttr rotationIndicesAttr, uint32_t slots,
-                            uint32_t cyclotomicOrder, OpBuilder& builder) {
+                            uint32_t cyclotomicOrder, OpBuilder& builder,
+                            uint32_t encodeBudget, uint32_t decodeBudget,
+                            bool hasPreAnalyzedConfig) {
     Location loc = bootstrapOp.getLoc();
-    Value cryptoContext = bootstrapOp.getCryptoContext();
 
     // Set insertion point before the bootstrap operation
     builder.setInsertionPoint(bootstrapOp);
 
-    // Step 1: Deserialize all rotation keys needed for bootstrap
-    SmallVector<Value> deserializedKeys;
-    SmallVector<openfhe::DeserializeKeyOp> deserializeOps;
+    // Step 1: Load all rotation keys needed for bootstrap using KMRT operations
+    SmallVector<Value> loadedKeys;
+    SmallVector<kmrt::LoadKeyOp> loadOps;
 
     for (int32_t rotIndex : rotationIndices) {
-      // Create eval key type for this rotation index
-      auto evalKeyType = openfhe::EvalKeyType::get(
-          builder.getContext(), builder.getIndexAttr(rotIndex));
+      // Create constant for the rotation index
+      auto indexConstant = builder.create<arith::ConstantOp>(
+          loc, builder.getI64IntegerAttr(rotIndex));
 
-      // Create deserialize operation
-      auto deserializeOp = builder.create<openfhe::DeserializeKeyOp>(
-          loc, evalKeyType, cryptoContext);
+      // Create load_key operation with static rotation index
+      auto rotKeyType = kmrt::RotKeyType::get(
+          builder.getContext(), std::optional<int64_t>(rotIndex));
+      auto loadOp = builder.create<kmrt::LoadKeyOp>(
+          loc, rotKeyType, indexConstant.getResult());
 
-      // Set the rotation index as an attribute
-      deserializeOp->setAttr("index", builder.getIndexAttr(rotIndex));
+      // For pre-analyzed configurations, set the correct level
+      if (hasPreAnalyzedConfig && BootstrapKeyConfigRegistry::hasLevel(
+                                      encodeBudget, decodeBudget, rotIndex)) {
+        int level = BootstrapKeyConfigRegistry::getLevel(
+            encodeBudget, decodeBudget, rotIndex);
+        loadOp->setAttr("key_depth",
+                        builder.getIntegerAttr(builder.getI64Type(), level));
+        llvm::dbgs() << "Set bootstrap key level " << level
+                     << " for rotation index " << rotIndex << "\n";
+      }
 
-      deserializedKeys.push_back(deserializeOp.getResult());
-      deserializeOps.push_back(deserializeOp);
+      loadedKeys.push_back(loadOp.getResult());
+      loadOps.push_back(loadOp);
     }
 
     // Step 2: Add attributes to the bootstrap operation
@@ -501,17 +684,17 @@ struct BootstrapRotationAnalysis
     // Step 3: Set insertion point after the bootstrap operation
     builder.setInsertionPointAfter(bootstrapOp);
 
-    // Step 4: Clear all the rotation keys
-    for (Value key : deserializedKeys) {
-      builder.create<openfhe::ClearKeyOp>(loc, cryptoContext, key);
+    // Step 4: Clear all the rotation keys using KMRT clear_key
+    for (Value key : loadedKeys) {
+      builder.create<kmrt::ClearKeyOp>(loc, key);
     }
 
     // Print information about the transformation
     llvm::dbgs() << "Transformed bootstrap operation:\n";
-    llvm::dbgs() << "  Added " << deserializeOps.size()
-                 << " DeserializeKeyOp operations\n";
-    llvm::dbgs() << "  Added " << deserializedKeys.size()
-                 << " ClearKeyOp operations\n";
+    llvm::dbgs() << "  Added " << loadOps.size()
+                 << " KMRT LoadKeyOp operations\n";
+    llvm::dbgs() << "  Added " << loadedKeys.size()
+                 << " KMRT ClearKeyOp operations\n";
     llvm::dbgs() << "  Rotation indices: [";
     for (size_t i = 0; i < rotationIndices.size(); ++i) {
       if (i > 0) llvm::dbgs() << ", ";
