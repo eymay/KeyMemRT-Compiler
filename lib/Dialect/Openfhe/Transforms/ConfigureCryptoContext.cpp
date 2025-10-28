@@ -9,6 +9,7 @@
 #include "lib/Dialect/BGV/IR/BGVEnums.h"
 #include "lib/Dialect/CKKS/IR/CKKSAttributes.h"
 #include "lib/Dialect/CKKS/IR/CKKSDialect.h"
+#include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/KMRT/IR/KMRTTypes.h"
 #include "lib/Dialect/LWE/IR/LWETypes.h"
 #include "lib/Dialect/Mgmt/IR/MgmtAttributes.h"
@@ -20,6 +21,8 @@
 #include "lib/Dialect/RNS/IR/RNSTypes.h"
 #include "lib/Utils/TransformUtils.h"
 #include "llvm/include/llvm/Support/raw_ostream.h"      // from @llvm-project
+#include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
+#include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"   // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinAttributes.h"     // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinOps.h"            // from @llvm-project
@@ -86,9 +89,265 @@ bool hasRelinOp(func::FuncOp op) {
   return result;
 }
 
+// Helper function to extract rotation indices from kmrt.load_key operations
+// by analyzing affine expressions and constant values
+void extractRotationIndicesFromLoadKey(kmrt::LoadKeyOp loadKeyOp,
+                                        std::set<int64_t> &distinctRotIndices) {
+  Value index = loadKeyOp.getIndex();
+
+  // Case 1: Direct constant index
+  if (auto constOp = index.getDefiningOp<arith::ConstantOp>()) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+      distinctRotIndices.insert(intAttr.getInt());
+      return;
+    }
+  }
+
+  // Case 2: Index cast from constant
+  if (auto indexCastOp = index.getDefiningOp<arith::IndexCastOp>()) {
+    if (auto constOp = indexCastOp.getIn().getDefiningOp<arith::ConstantOp>()) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+        distinctRotIndices.insert(intAttr.getInt());
+        return;
+      }
+    }
+  }
+
+  // Case 3: Affine apply - evaluate the affine expression
+  if (auto affineApplyOp = index.getDefiningOp<affine::AffineApplyOp>()) {
+    AffineMap map = affineApplyOp.getAffineMap();
+
+    // Separate dimension operands (loop IVs) and symbol operands (constants)
+    unsigned numDims = map.getNumDims();
+    unsigned numSymbols = map.getNumSymbols();
+
+    SmallVector<int64_t> lowerBounds;
+    SmallVector<int64_t> upperBounds;
+    SmallVector<int64_t> symbolValues;
+
+    // Process dimension operands (loop IVs)
+    for (unsigned i = 0; i < numDims; ++i) {
+      Value operand = affineApplyOp.getMapOperands()[i];
+      if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+        // Find the affine.for loop that defines this block argument
+        if (auto forOp = dyn_cast<affine::AffineForOp>(
+                blockArg.getParentBlock()->getParentOp())) {
+          // Get lower bound
+          int64_t lb;
+          if (forOp.hasConstantLowerBound()) {
+            lb = forOp.getConstantLowerBound();
+          } else {
+            return;  // Can't analyze non-constant lower bound
+          }
+
+          // Get upper bound (might be an affine map)
+          int64_t ub;
+          if (forOp.hasConstantUpperBound()) {
+            ub = forOp.getConstantUpperBound();
+          } else {
+            // Try to evaluate the affine map upper bound
+            AffineMap ubMap = forOp.getUpperBoundMap();
+            SmallVector<int64_t> ubOperandValues;
+            bool allConstant = true;
+            for (Value ubOperand : forOp.getUpperBoundOperands()) {
+              if (auto constOp = ubOperand.getDefiningOp<arith::ConstantOp>()) {
+                if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+                  ubOperandValues.push_back(intAttr.getInt());
+                } else {
+                  allConstant = false;
+                  break;
+                }
+              } else {
+                allConstant = false;
+                break;
+              }
+            }
+            if (!allConstant || ubOperandValues.size() != ubMap.getNumInputs()) {
+              return;  // Can't evaluate upper bound
+            }
+
+            // Evaluate the affine map by substituting constants
+            MLIRContext *ctx = ubMap.getContext();
+
+            // Separate into dimensions and symbols based on the map
+            unsigned numDimsInUbMap = ubMap.getNumDims();
+            unsigned numSymbolsInUbMap = ubMap.getNumSymbols();
+
+            SmallVector<AffineExpr> dimReplacements;
+            SmallVector<AffineExpr> symbolReplacements;
+
+            for (unsigned i = 0; i < numDimsInUbMap; ++i) {
+              if (i < ubOperandValues.size()) {
+                dimReplacements.push_back(getAffineConstantExpr(ubOperandValues[i], ctx));
+              }
+            }
+
+            for (unsigned i = 0; i < numSymbolsInUbMap; ++i) {
+              if (numDimsInUbMap + i < ubOperandValues.size()) {
+                symbolReplacements.push_back(getAffineConstantExpr(ubOperandValues[numDimsInUbMap + i], ctx));
+              }
+            }
+
+            // Replace dimensions and symbols
+            AffineExpr result = ubMap.getResult(0);
+            result = result.replaceDimsAndSymbols(dimReplacements, symbolReplacements);
+
+            if (auto constExpr = dyn_cast<AffineConstantExpr>(result)) {
+              ub = constExpr.getValue();
+            } else {
+              return;  // Upper bound not constant after evaluation
+            }
+          }
+
+          lowerBounds.push_back(lb);
+          upperBounds.push_back(ub);
+        } else {
+          return;  // Block arg not from affine.for
+        }
+      } else {
+        return;  // Dimension must be a loop IV
+      }
+    }
+
+    // Process symbol operands (constants)
+    for (unsigned i = 0; i < numSymbols; ++i) {
+      Value operand = affineApplyOp.getMapOperands()[numDims + i];
+      if (auto constOp = operand.getDefiningOp<arith::ConstantOp>()) {
+        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+          symbolValues.push_back(intAttr.getInt());
+        } else {
+          return;  // Symbol must be a constant
+        }
+      } else {
+        return;  // Symbol must be defined by a constant
+      }
+    }
+
+    // Now enumerate all combinations of dimension values with the constant symbols
+    if (lowerBounds.size() == numDims && symbolValues.size() == numSymbols) {
+      std::function<void(size_t, SmallVector<int64_t>&)> enumerateIndices;
+      enumerateIndices = [&](size_t dimIdx, SmallVector<int64_t>& currentDims) {
+        if (dimIdx >= lowerBounds.size()) {
+          // Evaluate the affine expression by substituting constant values
+          MLIRContext *ctx = map.getContext();
+
+          // Build replacement expressions for each dimension and symbol
+          SmallVector<AffineExpr> dimReplacements;
+          for (int64_t dimVal : currentDims) {
+            dimReplacements.push_back(getAffineConstantExpr(dimVal, ctx));
+          }
+
+          SmallVector<AffineExpr> symbolReplacements;
+          for (int64_t symVal : symbolValues) {
+            symbolReplacements.push_back(getAffineConstantExpr(symVal, ctx));
+          }
+
+          // Replace dimensions and symbols in the affine expression
+          AffineExpr result = map.getResult(0);
+          result = result.replaceDimsAndSymbols(dimReplacements, symbolReplacements);
+
+          // The result should now be a constant
+          if (auto constExpr = dyn_cast<AffineConstantExpr>(result)) {
+            int64_t value = constExpr.getValue();
+            if (value >= 0) {
+              distinctRotIndices.insert(value);
+            }
+          }
+          return;
+        }
+
+        for (int64_t i = lowerBounds[dimIdx]; i < upperBounds[dimIdx]; ++i) {
+          currentDims.push_back(i);
+          enumerateIndices(dimIdx + 1, currentDims);
+          currentDims.pop_back();
+        }
+      };
+
+      SmallVector<int64_t> dims;
+      enumerateIndices(0, dims);
+    }
+  }
+
+  // Case 4: Block argument from affine loop (direct use of IV)
+  if (auto blockArg = dyn_cast<BlockArgument>(index)) {
+    if (auto forOp = dyn_cast<affine::AffineForOp>(
+            blockArg.getParentBlock()->getParentOp())) {
+      // Get lower bound
+      int64_t lb;
+      if (forOp.hasConstantLowerBound()) {
+        lb = forOp.getConstantLowerBound();
+      } else {
+        return;  // Can't analyze non-constant lower bound
+      }
+
+      // Get upper bound (might be an affine map)
+      int64_t ub;
+      if (forOp.hasConstantUpperBound()) {
+        ub = forOp.getConstantUpperBound();
+      } else {
+        // Try to evaluate the affine map upper bound
+        AffineMap ubMap = forOp.getUpperBoundMap();
+        SmallVector<int64_t> ubOperandValues;
+        bool allConstant = true;
+        for (Value ubOperand : forOp.getUpperBoundOperands()) {
+          if (auto constOp = ubOperand.getDefiningOp<arith::ConstantOp>()) {
+            if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+              ubOperandValues.push_back(intAttr.getInt());
+            } else {
+              allConstant = false;
+              break;
+            }
+          } else {
+            allConstant = false;
+            break;
+          }
+        }
+        if (!allConstant || ubOperandValues.size() != ubMap.getNumInputs()) {
+          return;  // Can't evaluate upper bound
+        }
+
+        // Evaluate the affine map by substituting constants
+        MLIRContext *ctx = ubMap.getContext();
+        unsigned numDimsInUbMap = ubMap.getNumDims();
+        unsigned numSymbolsInUbMap = ubMap.getNumSymbols();
+
+        SmallVector<AffineExpr> dimReplacements;
+        SmallVector<AffineExpr> symbolReplacements;
+
+        for (unsigned i = 0; i < numDimsInUbMap; ++i) {
+          if (i < ubOperandValues.size()) {
+            dimReplacements.push_back(getAffineConstantExpr(ubOperandValues[i], ctx));
+          }
+        }
+
+        for (unsigned i = 0; i < numSymbolsInUbMap; ++i) {
+          if (numDimsInUbMap + i < ubOperandValues.size()) {
+            symbolReplacements.push_back(getAffineConstantExpr(ubOperandValues[numDimsInUbMap + i], ctx));
+          }
+        }
+
+        AffineExpr result = ubMap.getResult(0);
+        result = result.replaceDimsAndSymbols(dimReplacements, symbolReplacements);
+
+        if (auto constExpr = dyn_cast<AffineConstantExpr>(result)) {
+          ub = constExpr.getValue();
+        } else {
+          return;  // Upper bound not constant after evaluation
+        }
+      }
+
+      for (int64_t i = lb; i < ub; ++i) {
+        distinctRotIndices.insert(i);
+      }
+    }
+  }
+}
+
 // Helper function to find all the rotation indices in the function
 SmallVector<int64_t> findAllRotIndices(func::FuncOp op) {
   std::set<int64_t> distinctRotIndices;
+
+  // Find static rotation indices from RotOp operations
   op.walk([&](openfhe::RotOp rotOp) {
     auto rotKeyType = cast<kmrt::RotKeyType>(rotOp.getEvalKey().getType());
     if (rotKeyType.isStatic()) {
@@ -96,6 +355,13 @@ SmallVector<int64_t> findAllRotIndices(func::FuncOp op) {
     }
     return WalkResult::advance();
   });
+
+  // Find rotation indices from kmrt.load_key operations
+  op.walk([&](kmrt::LoadKeyOp loadKeyOp) {
+    extractRotationIndicesFromLoadKey(loadKeyOp, distinctRotIndices);
+    return WalkResult::advance();
+  });
+
   SmallVector<int64_t> rotIndicesResult(distinctRotIndices.begin(),
                                         distinctRotIndices.end());
   return rotIndicesResult;
@@ -289,6 +555,8 @@ struct ConfigureCryptoContext
   // Helper function to find all the rotation indices in the function
   SmallVector<int64_t> findAllRotIndices(func::FuncOp op) {
     std::set<int64_t> distinctRotIndices;
+
+    // Find static rotation indices from RotOp operations
     op.walk([&](openfhe::RotOp rotOp) {
       auto rotKeyType = cast<kmrt::RotKeyType>(rotOp.getEvalKey().getType());
       if (rotKeyType.isStatic()) {
@@ -303,6 +571,13 @@ struct ConfigureCryptoContext
       }
       return WalkResult::advance();
     });
+
+    // Find rotation indices from kmrt.load_key operations
+    op.walk([&](kmrt::LoadKeyOp loadKeyOp) {
+      extractRotationIndicesFromLoadKey(loadKeyOp, distinctRotIndices);
+      return WalkResult::advance();
+    });
+
     SmallVector<int64_t> rotIndicesResult(distinctRotIndices.begin(),
                                           distinctRotIndices.end());
     return rotIndicesResult;
@@ -391,9 +666,12 @@ struct ConfigureCryptoContext
       builder.create<openfhe::GenMulKeyOp>(cryptoContext, privateKey);
     }
     if (!config.rotIndices.empty()) {
-      builder.create<openfhe::GenRotKeyOp>(cryptoContext, privateKey,
-                                           config.rotIndices);
+      auto genRotKeyOp = builder.create<openfhe::GenRotKeyOp>(
+          cryptoContext, privateKey, config.rotIndices);
+      genRotKeyOp->setAttr("bootstrap_enabled",
+                           builder.getBoolAttr(config.hasBootstrapOp));
     }
+
     if (config.hasBootstrapOp) {
       builder.create<openfhe::SetupBootstrapOp>(
           cryptoContext,
