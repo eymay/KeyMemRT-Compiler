@@ -96,22 +96,26 @@ def ConvertToInPlace : Pass<"openfhe-convert-to-inplace"> {
   let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
 }
 
-def InsertCiphertextClears : Pass<"openfhe-insert-ciphertext-clears"> {
-  let summary = "Insert ciphertext clear operations to reduce memory usage";
+def InsertClearOps : Pass<"openfhe-insert-clear-ops"> {
+  let summary = "Insert clear operations to reduce memory usage";
   let description = [{
-    This pass analyzes the lifetime of ciphertext values and inserts clear operations
-    at points where ciphertexts are no longer needed. This helps reduce memory usage
-    in large FHE applications by explicitly releasing ciphertext memory.
+    This pass analyzes the lifetime of ciphertext and plaintext values and inserts 
+    clear operations at points where they are no longer needed. This helps reduce 
+    memory usage in large FHE applications by explicitly releasing memory.
 
-    The pass performs a simple liveness analysis to determine when a ciphertext
-    value is last used and inserts a clear operation immediately after that use.
+    The pass performs liveness analysis to determine when a ciphertext or plaintext
+    value is last used and inserts clear operations immediately after that use:
+    - clear_ct operations for ciphertexts
+    - clear_pt operations for plaintexts
 
     This optimization is particularly beneficial for:
-    - Large computation graphs with many intermediate ciphertexts
+    - Large computation graphs with many intermediate ciphertexts and plaintexts
     - Functions with long sequences of operations where intermediate results
       can be freed early
-    - Memory-constrained environments where FHE ciphertext memory usage
-      is a bottleneck
+    - Memory-constrained environments where FHE memory usage is a bottleneck
+
+    The pass processes both ciphertext and plaintext values uniformly, providing
+    comprehensive memory management for all FHE data types.
   }];
   let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
 }

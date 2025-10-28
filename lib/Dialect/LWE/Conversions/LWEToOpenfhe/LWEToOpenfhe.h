@@ -5,7 +5,7 @@
 #include "lib/Dialect/LWE/IR/LWEOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "lib/Utils/ConversionUtils.h"
-#include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
+#include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"   // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinAttributes.h"     // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinTypes.h"          // from @llvm-project
@@ -120,7 +120,8 @@ struct ConvertRotateOp : public OpConversionPattern<RotateOp> {
 
     // Create the eval key using KMRT load operation
     auto rotKeyType = kmrt::RotKeyType::get(rewriter.getContext(), rotIndex);
-    Value evalKey = rewriter.create<kmrt::LoadKeyOp>(loc, rotKeyType, rotIndexValue);
+    Value evalKey =
+        rewriter.create<kmrt::LoadKeyOp>(loc, rotKeyType, rotIndexValue);
 
     // Now we have the key, create the rotation op
     Value rotatedResult =

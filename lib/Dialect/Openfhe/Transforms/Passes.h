@@ -5,7 +5,7 @@
 #include "lib/Dialect/Openfhe/Transforms/ConfigureCryptoContext.h"
 #include "lib/Dialect/Openfhe/Transforms/ConvertToInPlace.h"
 #include "lib/Dialect/Openfhe/Transforms/CountAddAndKeySwitch.h"
-#include "lib/Dialect/Openfhe/Transforms/InsertCiphertextClears.h"
+#include "lib/Dialect/Openfhe/Transforms/InsertClearOps.h"
 
 namespace mlir {
 namespace heir {

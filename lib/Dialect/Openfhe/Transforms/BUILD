@@ -14,7 +14,7 @@ cc_library(
         ":ConfigureCryptoContext",
         ":ConvertToInPlace",
         ":CountAddAndKeySwitch",
-        ":InsertCiphertextClears",
+        ":InsertClearOps",
         ":pass_inc_gen",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
     ],
@@ -80,18 +80,20 @@ cc_library(
 )
 
 cc_library(
-    name = "InsertCiphertextClears",
-    srcs = ["InsertCiphertextClears.cpp"],
+    name = "InsertClearOps",
+    srcs = ["InsertClearOps.cpp"],
     hdrs = [
-        "InsertCiphertextClears.h",
+        "InsertClearOps.h",
     ],
     deps = [
         ":pass_inc_gen",
         "@heir//lib/Dialect/LWE/IR:Dialect",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:Support",
     ],
 )
