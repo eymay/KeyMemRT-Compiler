@@ -12,11 +12,34 @@ cc_library(
         "Passes.h",
     ],
     deps = [
+        ":KeyPrefetching",
         ":MergeRotationKeys",
         ":pass_inc_gen",
         "//lib/Dialect/KMRT/IR:Dialect",
     ],
 )
+
+cc_library(
+    name = "KeyPrefetching",
+    srcs = ["KeyPrefetching.cpp"],
+    hdrs = [
+        "KeyPrefetching.h",
+    ],
+    deps = [
+        ":pass_inc_gen",
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
+        "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineAnalysis",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
 cc_library(
     name = "MergeRotationKeys",
     srcs = ["MergeRotationKeys.cpp"],
@@ -48,6 +71,7 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Passes.td",
     td_srcs = [
+        "KeyPrefetching.td",
         "MergeRotationKeys.td",
     ],
     deps = [

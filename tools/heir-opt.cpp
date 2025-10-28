@@ -20,6 +20,7 @@
 #include "lib/Dialect/Jaxite/IR/JaxiteDialect.h"
 #include "lib/Dialect/JaxiteWord/IR/JaxiteWordDialect.h"
 #include "lib/Dialect/KMRT/IR/KMRTDialect.h"
+#include "lib/Dialect/KMRT/Transforms/Passes.h"
 #include "lib/Dialect/LWE/Conversions/LWEToLattigo/LWEToLattigo.h"
 #include "lib/Dialect/LWE/Conversions/LWEToOpenfhe/LWEToOpenfhe.h"
 #include "lib/Dialect/LWE/Conversions/LWEToPolynomial/LWEToPolynomial.h"
