@@ -44,8 +44,11 @@ module {
     %sub = ckks.sub %x, %y  : (!ct, !ct) -> !ct
     // CHECK: %[[v4:.*]] = openfhe.mul_no_relin [[C]], %[[x4:.*]], %[[y4:.*]]: ([[S]], [[T]], [[T]]) -> [[T2:.*]]
     %mul = ckks.mul %x, %y  : (!ct, !ct) -> !ct_D3
-    // CHECK: %[[v5:.*]] = openfhe.rot [[C]], %[[x5:.*]] {index = 4 : i64}
-    // CHECK-SAME: ([[S]], [[T]]) -> [[T]]
+    // CHECK: %[[c4:.*]] = arith.constant 4 : i64
+    // CHECK: %[[rk:.*]] = kmrt.load_key %[[c4]] : i64 -> <rotation_index = 4>
+    // CHECK: %[[v5:.*]] = openfhe.rot [[C]], %[[x5:.*]], %[[rk]]
+    // CHECK-SAME: ([[S]], [[T]], !kmrt.rot_key<rotation_index = 4>) -> [[T]]
+    // CHECK: kmrt.clear_key %[[rk]]
     %rot = ckks.rotate %x { offset = 4 } : !ct
     return %negate, %add, %sub, %mul, %rot : !ct, !ct, !ct, !ct_D3, !ct
   }
@@ -58,5 +61,15 @@ module {
       from_basis = array<i32: 0, 1, 2, 3>, to_basis = array<i32: 0, 1>
     }: !ct_D4 -> !ct
     return %relin : !ct
+  }
+
+  // CHECK: @test_linear_transform
+  // CHECK-SAME: ([[C:.*]]: [[S:.*crypto_context]], [[X:%.+]]: [[T:.*new_lwe_ciphertext.*]])
+  func.func @test_linear_transform(%x : !ct) -> !ct {
+    // CHECK: %[[weights:.*]] = arith.constant dense<1.000000e+00> : tensor<4xf64>
+    %weights = arith.constant dense<1.0> : tensor<4xf64>
+    // CHECK: %[[v7:.*]] = openfhe.linear_transform [[C]], %[[x7:.*]], %[[weights]] {diagonal_count = 4 : i32, slots = 1024 : i32}
+    %result = ckks.linear_transform %x, %weights {diagonal_count = 4 : i32, slots = 1024 : i32} : (!ct, tensor<4xf64>) -> !ct
+    return %result : !ct
   }
 }
