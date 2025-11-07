@@ -122,33 +122,44 @@ struct AddRotationKeys : impl::AddRotationKeysBase<AddRotationKeys> {
         llvm::errs() << "]\n";
       }
 
-      // Find truly new indices (additional indices not in current set)
+      // Determine final indices based on overwrite option
+      std::vector<int64_t> finalIndices;
       std::set<int64_t> trulyNewIndices;
-      std::set_difference(
-          additionalSet.begin(), additionalSet.end(), currentSet.begin(),
-          currentSet.end(),
-          std::inserter(trulyNewIndices, trulyNewIndices.begin()));
 
-      // Merge the sets (union)
-      std::set<int64_t> mergedSet;
-      std::set_union(currentSet.begin(), currentSet.end(),
-                     additionalSet.begin(), additionalSet.end(),
-                     std::inserter(mergedSet, mergedSet.begin()));
+      if (overwrite) {
+        // Overwrite mode: just use the additional indices
+        finalIndices = additionalIndices;
+        llvm::errs() << "Overwrite mode: replacing " << currentIndices.size()
+                     << " existing keys with " << finalIndices.size()
+                     << " new keys\n";
+      } else {
+        // Merge mode: find truly new indices and merge sets
+        std::set_difference(
+            additionalSet.begin(), additionalSet.end(), currentSet.begin(),
+            currentSet.end(),
+            std::inserter(trulyNewIndices, trulyNewIndices.begin()));
 
-      // Convert back to vector and create new attribute
-      std::vector<int64_t> mergedIndices(mergedSet.begin(), mergedSet.end());
+        // Merge the sets (union)
+        std::set<int64_t> mergedSet;
+        std::set_union(currentSet.begin(), currentSet.end(),
+                       additionalSet.begin(), additionalSet.end(),
+                       std::inserter(mergedSet, mergedSet.begin()));
+
+        // Convert back to vector
+        finalIndices = std::vector<int64_t>(mergedSet.begin(), mergedSet.end());
+
+        llvm::errs() << "Merge mode: " << currentIndices.size()
+                     << " existing + " << trulyNewIndices.size() << " new + "
+                     << (additionalIndices.size() - trulyNewIndices.size())
+                     << " already present = " << finalIndices.size()
+                     << " total rotation keys\n";
+      }
 
       // Create new DenseI64ArrayAttr
-      auto newIndicesAttr = builder.getDenseI64ArrayAttr(mergedIndices);
+      auto newIndicesAttr = builder.getDenseI64ArrayAttr(finalIndices);
 
       // Update the operation
       genRotKeyOp.setIndicesAttr(newIndicesAttr);
-
-      llvm::errs() << "Updated GenRotKeyOp: " << currentIndices.size()
-                   << " existing + " << trulyNewIndices.size() << " new + "
-                   << (additionalIndices.size() - trulyNewIndices.size())
-                   << " already present = " << mergedIndices.size()
-                   << " total rotation keys\n";
     }
 
     // Also process GenRotKeyDepthOp operations if they exist
@@ -196,38 +207,49 @@ struct AddRotationKeys : impl::AddRotationKeysBase<AddRotationKeys> {
         llvm::errs() << "]\n";
       }
 
-      // Find truly new indices (additional indices not in current set)
+      // Determine final indices based on overwrite option
+      std::vector<int64_t> finalIndices;
       std::set<int64_t> trulyNewIndices;
-      std::set_difference(
-          additionalSet.begin(), additionalSet.end(), currentSet.begin(),
-          currentSet.end(),
-          std::inserter(trulyNewIndices, trulyNewIndices.begin()));
 
-      // Merge the sets (union)
-      std::set<int64_t> mergedSet;
-      std::set_union(currentSet.begin(), currentSet.end(),
-                     additionalSet.begin(), additionalSet.end(),
-                     std::inserter(mergedSet, mergedSet.begin()));
+      if (overwrite) {
+        // Overwrite mode: just use the additional indices
+        finalIndices = additionalIndices;
+        llvm::errs() << "Overwrite mode: replacing " << currentIndices.size()
+                     << " existing keys with " << finalIndices.size()
+                     << " new keys (GenRotKeyDepthOp)\n";
+      } else {
+        // Merge mode: find truly new indices and merge sets
+        std::set_difference(
+            additionalSet.begin(), additionalSet.end(), currentSet.begin(),
+            currentSet.end(),
+            std::inserter(trulyNewIndices, trulyNewIndices.begin()));
 
-      // Convert back to vector and create new attribute
-      std::vector<int64_t> mergedIndices(mergedSet.begin(), mergedSet.end());
+        // Merge the sets (union)
+        std::set<int64_t> mergedSet;
+        std::set_union(currentSet.begin(), currentSet.end(),
+                       additionalSet.begin(), additionalSet.end(),
+                       std::inserter(mergedSet, mergedSet.begin()));
+
+        // Convert back to vector
+        finalIndices = std::vector<int64_t>(mergedSet.begin(), mergedSet.end());
+
+        llvm::errs() << "Merge mode: " << currentIndices.size()
+                     << " existing + " << trulyNewIndices.size() << " new + "
+                     << (additionalIndices.size() - trulyNewIndices.size())
+                     << " already present = " << finalIndices.size()
+                     << " total rotation keys (GenRotKeyDepthOp)\n";
+      }
 
       // Create new ArrayAttr for GenRotKeyDepthOp (it uses ArrayAttr, not
       // DenseI64ArrayAttr)
       SmallVector<Attribute> indexAttrs;
-      for (int64_t idx : mergedIndices) {
+      for (int64_t idx : finalIndices) {
         indexAttrs.push_back(builder.getI64IntegerAttr(idx));
       }
       auto newIndicesAttr = builder.getArrayAttr(indexAttrs);
 
       // Update the operation
       genRotKeyDepthOp.setIndicesAttr(newIndicesAttr);
-
-      llvm::errs() << "Updated GenRotKeyDepthOp: " << currentIndices.size()
-                   << " existing + " << trulyNewIndices.size() << " new + "
-                   << (additionalIndices.size() - trulyNewIndices.size())
-                   << " already present = " << mergedIndices.size()
-                   << " total rotation keys\n";
     }
 
     if (genRotKeyOps.empty() && genRotKeyDepthOps.empty()) {
