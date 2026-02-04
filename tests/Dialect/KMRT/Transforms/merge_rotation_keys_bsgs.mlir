@@ -1,4 +1,4 @@
-// RUN: heir-opt --kmrt-merge-rotation-keys %s | FileCheck %s
+// RUN: heir-opt --symbolic-bsgs-decomposition --kmrt-merge-rotation-keys %s | FileCheck %s
 
 !Z536903681_i64 = !mod_arith.int<536903681 : i64>
 !Z66813953_i64 = !mod_arith.int<66813953 : i64>
@@ -28,60 +28,37 @@ module attributes {ckks.schemeParam = #ckks.scheme_param<logN = 13, Q = [5369036
   func.func @nested_bsgs_key_reuse(%cc: !cc, %ct: !ct_L5) -> !ct_L5 {
     %cst = arith.constant dense<[[1.000000e+00, 1.000000e+00, 1.000000e+00, 1.000000e+00], [2.000000e+00, 2.000000e+00, 2.000000e+00, 2.000000e+00], [3.000000e+00, 3.000000e+00, 3.000000e+00, 3.000000e+00], [4.000000e+00, 4.000000e+00, 4.000000e+00, 4.000000e+00], [5.000000e+00, 5.000000e+00, 5.000000e+00, 5.000000e+00], [6.000000e+00, 6.000000e+00, 6.000000e+00, 6.000000e+00], [7.000000e+00, 7.000000e+00, 7.000000e+00, 7.000000e+00], [8.000000e+00, 8.000000e+00, 8.000000e+00, 8.000000e+00], [9.000000e+00, 9.000000e+00, 9.000000e+00, 9.000000e+00], [1.000000e+01, 1.000000e+01, 1.000000e+01, 1.000000e+01], [1.100000e+01, 1.100000e+01, 1.100000e+01, 1.100000e+01], [1.200000e+01, 1.200000e+01, 1.200000e+01, 1.200000e+01], [1.300000e+01, 1.300000e+01, 1.300000e+01, 1.300000e+01], [1.400000e+01, 1.400000e+01, 1.400000e+01, 1.400000e+01], [1.500000e+01, 1.500000e+01, 1.500000e+01, 1.500000e+01], [1.600000e+01, 1.600000e+01, 1.600000e+01, 1.600000e+01]]> : tensor<16x4xf64>
 
-    // Pre-load key 1 before the nested loops
-    // CHECK: %[[C1:.*]] = arith.constant 1 : index
-    %c1 = arith.constant 1 : index
-    // CHECK: %[[RK1_PRE:.*]] = kmrt.load_key %[[C1]]
-    %0 = kmrt.load_key %c1 : index -> <>
-    // CHECK: %[[CT_0:.*]] = openfhe.rot %{{.*}}, %{{.*}}, %[[RK1_PRE]]
-    %ct_0 = openfhe.rot %cc, %ct, %0 : (!cc, !ct_L5, !kmrt.rot_key<>) -> !ct_L5
-    // The clear is removed - key will be reused in the nested loop
-    // CHECK-NOT: kmrt.clear_key %[[RK1_PRE]]
-    kmrt.clear_key %0 : <>
-
     %extracted_slice = tensor.extract_slice %cst[0, 0] [1, 4] [1, 1] : tensor<16x4xf64> to tensor<4xf64>
     %pt = lwe.rlwe_encode %extracted_slice {encoding = #inverse_canonical_encoding1, ring = #ring_f64_1} : tensor<4xf64> -> !pt
-    %ct_1 = openfhe.mul_plain %cc, %ct_0, %pt : (!cc, !ct_L5, !pt) -> !ct_L5
-    %c3 = arith.constant {bsgs.tunable_param = "baby_step_size"} 3 : index
+    %ct_0 = openfhe.mul_plain %cc, %ct, %pt : (!cc, !ct_L5, !pt) -> !ct_L5
 
-    // Outer loop (giant step)
-    // CHECK: %[[CT_2:.*]] = affine.for %[[OUTER_IV:.*]] =
-    %ct_2 = affine.for %arg0 = 0 to #map()[%c3] iter_args(%ct_3 = %ct_1) -> (!ct_L5) {
-      %1 = affine.apply #map1(%arg0)[%c3]
-      %2 = kmrt.load_key %1 : index -> <>
-      %ct_4 = openfhe.rot %cc, %ct, %2 : (!cc, !ct_L5, !kmrt.rot_key<>) -> !ct_L5
-      kmrt.clear_key %2 : <>
+    // BSGS decomposition creates nested loops with memref for key reuse
+    // CHECK: memref.alloca() : memref<4x!rk>
+    // Prologue loop to preload baby step keys (0 to 4)
+    // CHECK: affine.for %{{.*}} = 0 to 4
+    // CHECK:   kmrt.load_key
+    // CHECK:   memref.store
+    // Main BSGS outer loop (giant steps) from 1 to 2
+    // CHECK: affine.for %{{.*}} = 1 to 2
+    // CHECK:   kmrt.load_key
+    // Main BSGS inner loop (baby steps) from 0 to 4
+    // CHECK:   affine.for %{{.*}} = 0 to 4
+    // CHECK:     memref.load
+    // CHECK:     kmrt.use_key
 
-      // Inner loop (baby step) - loads keys 0, 1, 2
-      // When %arg0 == 0 and %arg1 == 1, should reuse pre-loaded key 1
-      // CHECK:   affine.for
-      %ct_5 = affine.for %arg1 = 0 to #map2(%c3) iter_args(%ct_6 = %ct_3) -> (!ct_L5) {
-        %3 = affine.apply #map3(%arg0, %arg1)[%c3]
-
-        // The load is wrapped with affine.if checking both loop IVs
-        // CHECK:     affine.apply
-        // CHECK:     affine.if
-        // CHECK-NEXT:   kmrt.use_key %[[RK1_PRE]]
-        // CHECK:     } else {
-        // CHECK-NEXT:   kmrt.load_key
-        // CHECK:     }
-        %4 = kmrt.load_key %arg1 : index -> <>
-        %ct_7 = openfhe.rot %cc, %ct_4, %4 : (!cc, !ct_L5, !kmrt.rot_key<>) -> !ct_L5
-        // CHECK:     kmrt.clear_key
-        kmrt.clear_key %4 : <>
-        %extracted_slice_8 = tensor.extract_slice %cst[%3, 0] [1, 4] [1, 1] : tensor<16x4xf64> to tensor<4xf64>
-        %pt_9 = lwe.rlwe_encode %extracted_slice_8 {encoding = #inverse_canonical_encoding1, ring = #ring_f64_1} : tensor<4xf64> -> !pt
-        %ct_10 = openfhe.mul_plain %cc, %ct_7, %pt_9 : (!cc, !ct_L5, !pt) -> !ct_L5
-        %ct_11 = openfhe.add %cc, %ct_6, %ct_10 : (!cc, !ct_L5, !ct_L5) -> !ct_L5
-        affine.yield %ct_11 : !ct_L5
-      }
-      affine.yield %ct_5 : !ct_L5
+    %ct_1 = affine.for %arg0 = 1 to 13 iter_args(%ct_2 = %ct_0) -> (!ct_L5) {
+      %0 = arith.index_cast %arg0 : index to i64
+      %rk = kmrt.load_key %0 : i64 -> <rotation_index = 0>
+      %ct_3 = openfhe.rot %cc, %ct, %rk : (!cc, !ct_L5, !kmrt.rot_key<rotation_index = 0>) -> !ct_L5
+      kmrt.clear_key %rk : <rotation_index = 0>
+      %extracted_slice_4 = tensor.extract_slice %cst[%arg0, 0] [1, 4] [1, 1] : tensor<16x4xf64> to tensor<4xf64>
+      %pt_5 = lwe.rlwe_encode %extracted_slice_4 {encoding = #inverse_canonical_encoding1, ring = #ring_f64_1} : tensor<4xf64> -> !pt
+      %ct_6 = openfhe.mul_plain %cc, %ct_3, %pt_5 : (!cc, !ct_L5, !pt) -> !ct_L5
+      %ct_7 = openfhe.add %cc, %ct_2, %ct_6 : (!cc, !ct_L5, !ct_L5) -> !ct_L5
+      affine.yield %ct_7 : !ct_L5
     }
 
-    // The test verifies that the pass successfully optimizes nested loops (BSGS pattern)
-    // by wrapping inner loads with affine.if to reuse pre-loaded keys when loop IVs match
-
-    // CHECK: return %[[CT_2]]
-    return %ct_2 : !ct_L5
+    // CHECK: return
+    return %ct_1 : !ct_L5
   }
 }

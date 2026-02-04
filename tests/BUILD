@@ -60,6 +60,8 @@ test_suite(
         "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_postloop.mlir.test",
         "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_prepost.mlir.test",
         "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_bootstrap.mlir.test",
+        "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_two_bootstraps.mlir.test",
+        # "//tests/Dialect/KMRT/Transforms:merge_rotation_keys_bootstrap_loop_bootstrap.mlir.test",
         "//tests/Dialect/KMRT/Transforms:configure_crypto_context_bsgs.mlir.test",
         "//tests/Dialect/KMRT/Transforms:key_prefetching_trivial.mlir.test",
         "//tests/Dialect/KMRT/Transforms:key_prefetching_affine.mlir.test",

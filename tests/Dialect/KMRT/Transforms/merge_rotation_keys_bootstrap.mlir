@@ -34,24 +34,28 @@ func.func @test_rotation_with_bootstrap(%cc: !cc, %ct: !ct) -> !ct {
   // Rotation with index 16 before bootstrap
   // CHECK: arith.constant 16
   %c16 = arith.constant 16 : i64
-  // CHECK: %[[RK16:.*]] = kmrt.load_key {{.*}} {key_depth = 4 : i64} : i64 -> <rotation_index = 16>
+  // CHECK: %[[RK16:.*]] = kmrt.load_key {{.*}} : i64 -> !rk{{$}}
   %rk1 = kmrt.load_key %c16 : i64 -> !rk16
   // CHECK: openfhe.rot {{.*}}, {{.*}}, %[[RK16]]
   %ct_rot = openfhe.rot %cc, %ct, %rk1 : (!cc, !ct, !rk16) -> !ct
-  // First clear should be removed by merge pass
+  // First clear should be removed by merge pass (key will be reused after bootstrap)
   // CHECK-NOT: kmrt.clear_key %[[RK16]]
   kmrt.clear_key %rk1 : !rk16
 
   // Bootstrap will have many rotation keys loaded (including key 16)
+  // Bootstrap key loads happen here
+  // CHECK: kmrt.load_key
   // CHECK: openfhe.bootstrap
   %ct_boot = openfhe.bootstrap %cc, %ct_rot : (!cc, !ct) -> !ct
 
-  // After bootstrap, key 16 should be reused (no new load for key 16)
+  // After bootstrap, all keys EXCEPT key 16 are cleared
+  // Many kmrt.clear_key operations for other bootstrap keys
+  // CHECK: kmrt.clear_key
   // Second load of key 16 should be removed - the rotation should use the same %[[RK16]]
   %rk2 = kmrt.load_key %c16 : i64 -> !rk16
   // CHECK: openfhe.rot {{.*}}, {{.*}}, %[[RK16]]
   %ct_rot2 = openfhe.rot %cc, %ct_boot, %rk2 : (!cc, !ct, !rk16) -> !ct
-  // Final clear of key 16
+  // Final clear of key 16 happens at the end
   // CHECK: kmrt.clear_key %[[RK16]]
   kmrt.clear_key %rk2 : !rk16
 

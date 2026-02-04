@@ -59,17 +59,22 @@ module attributes {ckks.schemeParam = #ckks.scheme_param<logN = 13, Q = [5369036
     %ct_0 = openfhe.mul_plain %cc, %ct, %pt : (!cc, !ct_L5, !pt) -> !ct_L5
 
     // The linear transform will be decomposed with BSGS
-    // After BSGS, the inner loop should reuse the pre-loaded key 2
+    // The prologue loop has affine.if to conditionally reuse pre-loaded key 2
+    // CHECK: affine.for
+    // CHECK:   affine.if
+    // CHECK-NEXT:   kmrt.use_key %[[RK2]]
+    // CHECK:   } else {
+    // CHECK-NEXT:   kmrt.load_key
+    // CHECK:   memref.store
+    // After prologue, outer loop loads giant step keys
     // CHECK: affine.for
     // CHECK:   kmrt.load_key
     // CHECK:   openfhe.rot
     // CHECK:   kmrt.clear_key
+    // Inner loop uses memref.load + use_key (no affine.if needed)
     // CHECK:   affine.for
-    // Inner loop load is wrapped with affine.if to reuse pre-loaded key
-    // CHECK:     affine.if
-    // CHECK-NEXT:   kmrt.use_key %[[RK2]]
-    // CHECK:     } else {
-    // CHECK-NEXT:   kmrt.load_key
+    // CHECK:     memref.load
+    // CHECK:     kmrt.use_key
     %ct_1 = affine.for %arg0 = 1 to 16 iter_args(%ct_2 = %ct_0) -> (!ct_L5) {
       %0 = arith.index_cast %arg0 : index to i64
       %rk_loop = kmrt.load_key %0 : i64 -> !rk

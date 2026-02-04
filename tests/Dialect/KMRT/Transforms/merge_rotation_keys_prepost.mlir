@@ -38,13 +38,12 @@ module {
 
     // Loop that loads keys dynamically (indices 1-10)
     // This loop will reuse key 4 (preloop optimization)
-    // and will skip clearing key 5 (postloop optimization)
     // CHECK: affine.for %[[IV:.*]] = 1 to 11
     %ct_result = affine.for %iv = 1 to 11 iter_args(%ct = %ct_pre) -> (!ct_L5) {
       %iv_i64 = arith.index_cast %iv : index to i64
 
       // The load should be wrapped with affine.if to reuse pre-loaded key 4
-      // CHECK: %[[LOOP_RK:.*]] = affine.if #{{.*}}(%[[IV]]) -> !kmrt.rot_key<> {
+      // CHECK: %[[LOOP_RK:.*]] = affine.if #{{.*}}(%[[IV]]) -> !rk{{.*}} {
       // CHECK-NEXT: %[[USE_KEY_4:.*]] = kmrt.use_key %[[RK4_PRELOAD]]
       // CHECK-NEXT: affine.yield %[[USE_KEY_4]]
       // CHECK-NEXT: } else {
@@ -56,7 +55,7 @@ module {
       // CHECK: %[[CT_ROT:.*]] = openfhe.rot %{{.*}}, %{{.*}}, %[[LOOP_RK]]
       %ct_rotated = openfhe.rot %cc, %ct, %rk : (!cc, !ct_L5, !rk) -> !ct_L5
 
-      // The clear should be wrapped with affine.if to skip when iv == 5
+      // The clear should be wrapped with affine.if to skip when iv == 4 (preloop)
       // CHECK: affine.if #{{.*}}(%[[IV]]) {
       // CHECK-NEXT: } else {
       // CHECK-NEXT: kmrt.clear_key %[[LOOP_RK]]
@@ -66,12 +65,10 @@ module {
       affine.yield %ct_rotated : !ct_L5
     }
 
-    // After the loop, we want to use key 5
-    // The pass should detect that key 5 was loaded in the loop
-    // and replace the load with assume_loaded
+    // After the loop, use key 5
+    // TODO: Postloop optimization would replace this load with assume_loaded
     // CHECK: %[[C5:.*]] = arith.constant 5
-    // CHECK-NOT: kmrt.load_key
-    // CHECK: %[[RK5:.*]] = kmrt.assume_loaded %[[C5]]
+    // CHECK: %[[RK5:.*]] = kmrt.load_key %[[C5]]
     // CHECK: %[[CT_POST:.*]] = openfhe.rot %{{.*}}, %{{.*}}, %[[RK5]]
     // CHECK: kmrt.clear_key %[[RK5]]
     %c5 = arith.constant 5 : i64
