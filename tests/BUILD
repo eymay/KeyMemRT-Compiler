@@ -78,6 +78,8 @@ test_suite(
         # OpenFHE tests
         # "//tests/Transforms/mlir_to_openfhe_ckks:keymemrt_integration.mlir.test",
         
+        "//tests/Dialect/Openfhe/Transforms:fast_rotation_precompute_affine.mlir.test",
+
         # Add any test from anywhere in the repo
     ],
 )

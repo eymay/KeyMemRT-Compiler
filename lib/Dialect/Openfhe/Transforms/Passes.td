@@ -124,9 +124,14 @@ def FastRotationPrecompute : Pass<"openfhe-fast-rotation-precompute"> {
   let summary = "Identify and apply EvalFastRotation when possible.";
   let description = [{
     This pass identifies when a ciphertext is rotated by multiple different
-    shifts, and replaces the `EvalRot` ops with `EvalFastRotationPrecompute`
-    followed by `EvalFastRotate`.
+    shifts, and replaces the `openfhe.rot` ops with `openfhe.fast_rotation_precompute`
+    followed by `openfhe.fast_rotation` ops.
+
+    This optimization is beneficial when the same ciphertext is rotated multiple times
+    with different indices, as the digit decomposition can be precomputed once and
+    reused for all rotations.
   }];
 }
+
 
 #endif  // LIB_DIALECT_OPENFHE_TRANSFORMS_PASSES_TD_

@@ -588,27 +588,25 @@ def Openfhe_LinearTransformOp : Openfhe_Op<"linear_transform"> {
     $crypto_context `,` $ciphertext `,` $weights
     attr-dict `:` `(` type($ciphertext) `,` type($weights) `)` `->` type($result)
   }];
+}
 
 def FastRotationPrecomputeOp : Openfhe_Op<"fast_rotation_precompute", [Pure]> {
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
-    LWECiphertext:$input
+    NewLWECiphertext:$input
   );
   let results = (outs Openfhe_DigitDecomposition:$output);
 }
 
 // TODO(#1924): support the "Ext" variant for hybrid key switching.
-def FastRotationOp : Openfhe_Op<"fast_rotation", [Pure,
-   AllTypesMatch<["input", "output"]>
-]> {
+def FastRotationOp : Openfhe_Op<"fast_rotation", [Pure]>{
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
-    LWECiphertext:$input,
-    IndexAttr:$index,
-    IndexAttr:$cyclotomicOrder,
+    NewLWECiphertext:$ciphertext,
+    KMRT_RotKeyType:$evalKey,
     Openfhe_DigitDecomposition:$precomputedDigitDecomp
   );
-  let results = (outs LWECiphertext:$output);
+  let results = (outs NewLWECiphertext:$output);
 }
 
 #endif  // LIB_DIALECT_OPENFHE_IR_OPENFHEOPS_TD_
