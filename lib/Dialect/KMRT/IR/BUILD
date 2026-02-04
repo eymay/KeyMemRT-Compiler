@@ -12,6 +12,7 @@ td_library(
         "KMRTTypes.td",
     ],
     deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfacesTdFiles",
     ],

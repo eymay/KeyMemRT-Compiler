@@ -3,6 +3,7 @@
 
 include "lib/Dialect/KMRT/IR/KMRTDialect.td"
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/BuiltinTypeInterfaces.td"
 include "mlir/IR/OpAsmInterface.td"
 
 class KMRT_Type<string name, string typeMnemonic, list<Trait> traits = []>
@@ -24,7 +25,7 @@ class KMRT_Type<string name, string typeMnemonic, list<Trait> traits = []>
   }];
 }
 
-def KMRT_RotKeyType : KMRT_Type<"RotKey", "rot_key"> {
+def KMRT_RotKeyType : KMRT_Type<"RotKey", "rot_key", [MemRefElementTypeInterface]> {
   let summary = "A rotation key type with optional static index parameter";
   let description = [{
     The RotKeyType represents rotation keys used in the KeyMemRT system.
