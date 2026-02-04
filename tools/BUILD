@@ -125,7 +125,6 @@ cc_binary(
         "@heir//lib/Transforms/LowerPolynomialEval",
         "@heir//lib/Transforms/MemrefToArith:ExpandCopy",
         "@heir//lib/Transforms/MemrefToArith:MemrefToArithRegistration",
-        # "@heir//lib/Transforms/MergeEvalKeys",  # Uses old openfhe ops
         # "@heir//lib/Transforms/RotationDepthAnalysis",  # Uses old openfhe ops
         # "@heir//lib/Transforms/KeyCompression",  # Uses old openfhe ops
         "@heir//lib/Transforms/LowerLinearTransform",

@@ -79,7 +79,6 @@
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 #include "lib/Transforms/LowerPolynomialEval/LowerPolynomialEval.h"
 // #include "lib/Transforms/MemoryEstimation/MemoryEstimation.h"  // Uses old openfhe ops
-// #include "lib/Transforms/MergeEvalKeys/MergeEvalKeys.h"  // Uses old openfhe ops
 #include "lib/Transforms/OperationBalancer/OperationBalancer.h"
 #include "lib/Transforms/OptimizeRelinearization/OptimizeRelinearization.h"
 #include "lib/Transforms/PolynomialApproximation/PolynomialApproximation.h"
@@ -293,7 +292,6 @@ int main(int argc, char **argv) {
   registerLowerPolynomialEvalPasses();
   registerTensorToScalarsPasses();
   registerTensorLinalgToAffineLoops();
-  // registerMergeEvalKeysPasses();  // Uses old openfhe ops
   // registerRotationDecomposePasses();  // Uses old openfhe ops
   // registerRotationDepthAnalysisPasses();  // Uses old openfhe ops
   // registerKeyCompressionPasses();  // Uses old openfhe ops
