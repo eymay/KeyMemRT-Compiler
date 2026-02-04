@@ -8,13 +8,19 @@
 
 #include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/KMRT/IR/KMRTTypes.h"
+#include "lib/Dialect/KMRT/Transforms/AffineSetAnalysis.h"
+#include "lib/Dialect/KMRT/Transforms/RotationKeyLivenessDFA.h"
 #include "llvm/include/llvm/Support/Debug.h"  // from @llvm-project
+#include "mlir/include/mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"  // from @llvm-project
+#include "mlir/include/mlir/Analysis/DataFlow/DeadCodeAnalysis.h"  // from @llvm-project
+#include "mlir/include/mlir/Analysis/DataFlowFramework.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
-#include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
-#include "mlir/include/mlir/Dialect/SCF/IR/SCF.h"  // from @llvm-project
+#include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
+#include "mlir/include/mlir/Dialect/MemRef/IR/MemRef.h"  // from @llvm-project
+#include "mlir/include/mlir/Dialect/SCF/IR/SCF.h"        // from @llvm-project
 #include "mlir/include/mlir/IR/Builders.h"
-#include "mlir/include/mlir/IR/IntegerSet.h"
 #include "mlir/include/mlir/IR/IRMapping.h"
+#include "mlir/include/mlir/IR/IntegerSet.h"
 #include "mlir/include/mlir/IR/Value.h"
 #include "mlir/include/mlir/Pass/Pass.h"
 #include "mlir/include/mlir/Support/LLVM.h"
@@ -83,35 +89,75 @@ struct RotationKeyIdentity {
 };
 
 struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
+  using MergeRotationKeysBase::MergeRotationKeysBase;
+
   void runOnOperation() override {
-    // First pass: Check for constant-indexed keys that can be reused in affine loops
-    // This must happen BEFORE the basic merging pass
-    SmallVector<ClearKeyOp> clearOpsToTransform;
+    llvm::errs() << "\n=== MergeRotationKeys: DFA-Based Analysis ===\n";
+
+    // Step 1: Run dataflow analysis to track key liveness
+    DataFlowSolver solver;
+    solver.load<dataflow::DeadCodeAnalysis>();
+    solver.load<dataflow::SparseConstantPropagation>();
+    solver.load<kmrt::RotationKeyLivenessDFA>();
+
+    if (failed(solver.initializeAndRun(getOperation()))) {
+      llvm::errs() << "DFA solver failed\n";
+      return signalPassFailure();
+    }
+
+    llvm::errs() << "DFA analysis completed successfully\n";
+
+    // Step 2: Merge sequential clear-load pairs (e.g., between bootstraps)
+    llvm::errs() << "=== Step 2: Sequential Clear-Load Merging ===\n";
+    mergeSequentialClearLoadPairs(solver);
+
+    // Step 3: Find preloop keys that can be merged with loops
+    // Map: loop -> vector of (preloop key index, preloadOp, clearOp)
+    DenseMap<Operation *,
+             SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>>>
+        loopToPreloopKeys;
+
     getOperation()->walk([&](ClearKeyOp clearOp) {
       // Get the key being cleared
       Value key = clearOp.getRotKey();
       auto loadOp = key.getDefiningOp<LoadKeyOp>();
       if (!loadOp) return;
 
-      // Extract constant index (either from static type or constant operand)
+      // Use DFA to check key state
+      const auto *lattice = solver.lookupState<kmrt::RotationKeyLattice>(key);
+      if (!lattice || !lattice->getValue().isLoaded()) {
+        llvm::errs() << "  Key not in loaded state, skipping\n";
+        return;
+      }
+
+      // Extract constant index
       auto maybeIndex = getConstantIndex(loadOp);
       if (!maybeIndex) return;
 
-      int64_t staticIndex = *maybeIndex;
+      int64_t preloopKeyIndex = *maybeIndex;
+      // llvm::errs() << "  Found preloop key " << preloopKeyIndex << "\n";
 
-      // Search forward to find affine loops that might use this key
+      // Search forward for affine loops
       Operation *searchOp = clearOp->getNextNode();
       int distance = 0;
 
-      while (searchOp && distance < maxMergeDistance * 2) {
+      while (searchOp && distance < 20) {
         if (auto affineLoop = dyn_cast<affine::AffineForOp>(searchOp)) {
-          if (loopMightLoadKey(affineLoop, staticIndex)) {
-            clearOpsToTransform.push_back(clearOp);
+          // Use affine set analysis to check intersection
+          auto mergeOpp =
+              kmrt::analyzeMergeOpportunity(preloopKeyIndex, affineLoop);
+
+          if (mergeOpp && mergeOpp->isValid()) {
+            // llvm::errs() << "  Found merge opportunity: key " <<
+            // preloopKeyIndex
+            //              << " can merge with loop\n";
+            loopToPreloopKeys[affineLoop.getOperation()].push_back(
+                std::make_tuple(preloopKeyIndex, loadOp, clearOp));
             return;
           }
         }
 
-        if (!isKeyManagementOp(searchOp)) {
+        if (!isa<LoadKeyOp, ClearKeyOp, UseKeyOp, AssumeLoadedOp>(searchOp)) {
           distance++;
         }
 
@@ -119,146 +165,173 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
       }
     });
 
-    // Now perform the transformations outside the walk
-    for (ClearKeyOp clearOp : clearOpsToTransform) {
-      reorderLoopForKeyReuse(clearOp);
+    // Step 4: Transform loops with preloop merge opportunities
+    llvm::errs() << "Found " << loopToPreloopKeys.size()
+                 << " loops with merge opportunities\n";
+
+    for (auto &[loopOp, preloopKeys] : loopToPreloopKeys) {
+      auto affineLoop = cast<affine::AffineForOp>(loopOp);
+
+      llvm::errs() << "  Transforming loop with " << preloopKeys.size()
+                   << " preloop keys: ";
+      for (auto &[keyIndex, loadOp, clearOp] : preloopKeys) {
+        llvm::errs() << keyIndex << " ";
+      }
+      llvm::errs() << "\n";
+
+      // First try to extend existing affine.if (BSGS case)
+      extendAffineIfForPreloopKeys(affineLoop, preloopKeys, solver);
+
+      // If no affine.if was found, create new ones (standalone case)
+      createStandaloneMerge(affineLoop, preloopKeys, solver);
     }
 
-    // Second pass: Check for constant-indexed keys after loops that can reuse loop keys
-    SmallVector<LoadKeyOp> postLoopLoadsToTransform;
-    getOperation()->walk([&](LoadKeyOp loadOp) {
-      // Extract constant index (either from static type or constant operand)
-      auto maybeIndex = getConstantIndex(loadOp);
-      if (!maybeIndex) return;
+    // Step 4.5: Find postloop keys that can be merged with loops
+    llvm::errs() << "=== Step 4.5: Postloop Merging ===\n";
+    // First handle simple direct-load patterns
+    findAndMergeSimplePostloopKeys(solver);
+    // Then handle memref-based bootstrap patterns
+    findAndMergePostloopKeys(solver);
 
-      int64_t staticIndex = *maybeIndex;
+    // Step 5: Apply loop peeling optimization for hot inner loops
+    if (enableLoopPeeling) {
+      llvm::errs() << "=== Step 5: Loop Peeling Optimization ===\n";
+      SmallVector<affine::AffineForOp> outerLoops;
+      getOperation()->walk([&](affine::AffineForOp loop) {
+        // Find outer loops that contain inner loops with key management
+        loop.walk([&](affine::AffineForOp innerLoop) {
+          if (innerLoop != loop) {
+            outerLoops.push_back(loop);
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+      });
 
-      // Search backwards to find affine loops
-      Operation *searchOp = loadOp->getPrevNode();
-      int distance = 0;
+      for (auto outerLoop : outerLoops) {
+        peelInnerLoopKeyManagement(outerLoop);
+      }
+    }
 
-      while (searchOp && distance < maxMergeDistance * 2) {
-        if (auto affineLoop = dyn_cast<affine::AffineForOp>(searchOp)) {
-          if (loopMightLoadKey(affineLoop, staticIndex)) {
-            postLoopLoadsToTransform.push_back(loadOp);
+    llvm::errs() << "=== MergeRotationKeys: Completed ===\n";
+  }
+
+ private:
+  // Count FHE operations inside an operation (recursively for loops)
+  int64_t countFHEOps(Operation *op) {
+    // Check if this is an FHE operation
+    bool isFHEOp = false;
+    if (op->getDialect()) {
+      StringRef dialectName = op->getDialect()->getNamespace();
+      isFHEOp = dialectName == "openfhe";
+    }
+
+    // For loops, count operations inside and multiply by iteration count
+    if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+      int64_t iterCount =
+          forOp.getConstantUpperBound() - forOp.getConstantLowerBound();
+      int64_t opsInBody = 0;
+
+      // Count operations in the loop body
+      for (auto &bodyOp : forOp.getBody()->without_terminator()) {
+        opsInBody += countFHEOps(&bodyOp);
+      }
+
+      return iterCount * opsInBody;
+    }
+
+    // For other operations with regions, recurse into them
+    if (op->getNumRegions() > 0) {
+      int64_t totalOps = isFHEOp ? 1 : 0;
+      for (Region &region : op->getRegions()) {
+        for (Block &block : region.getBlocks()) {
+          for (Operation &innerOp : block.without_terminator()) {
+            totalOps += countFHEOps(&innerOp);
+          }
+        }
+      }
+      return totalOps;
+    }
+
+    // Leaf operation
+    return isFHEOp ? 1 : 0;
+  }
+
+  // Merge sequential clear-load pairs for the same key
+  void mergeSequentialClearLoadPairs(DataFlowSolver &solver) {
+    SmallVector<std::pair<ClearKeyOp, LoadKeyOp>> pairsToMerge;
+
+    getOperation()->walk([&](ClearKeyOp clearOp) {
+      Value clearedKey = clearOp.getRotKey();
+      auto clearLoadOp = clearedKey.getDefiningOp<LoadKeyOp>();
+      if (!clearLoadOp) return;
+
+      // Get the key index for this clear
+      auto maybeClearIndex = getConstantIndex(clearLoadOp);
+      if (!maybeClearIndex) return;
+
+      int64_t clearKeyIndex = *maybeClearIndex;
+
+      // Search forward for a load with the same key index
+      Operation *searchOp = clearOp->getNextNode();
+      int64_t distance = 0;
+      const int64_t maxDistance =
+          10;  // Allow much larger distance with loop unrolling
+
+      while (searchOp && distance < maxDistance) {
+        if (auto loadOp = dyn_cast<LoadKeyOp>(searchOp)) {
+          auto maybeLoadIndex = getConstantIndex(loadOp);
+          if (maybeLoadIndex && *maybeLoadIndex == clearKeyIndex) {
+            // Found a matching load - mark for merging
+            // llvm::errs() << "  Found clear-load pair for key " <<
+            // clearKeyIndex
+            //              << " at distance " << distance << " FHE ops\n";
+            pairsToMerge.push_back({clearOp, loadOp});
             return;
           }
         }
 
-        if (!isKeyManagementOp(searchOp)) {
-          distance++;
-        }
+        // Count FHE operations, accounting for loop bounds
+        int64_t opCount = countFHEOps(searchOp);
+        distance += opCount;
 
-        searchOp = searchOp->getPrevNode();
+        searchOp = searchOp->getNextNode();
       }
     });
 
-    // Perform post-loop optimizations
-    for (LoadKeyOp loadOp : postLoopLoadsToTransform) {
-      reuseLoopKeyForPostLoad(loadOp);
+    llvm::errs() << "Found " << pairsToMerge.size()
+                 << " clear-load pairs to merge\n";
+
+    // Perform the merges
+    for (auto &[clearOp, loadOp] : pairsToMerge) {
+      Value originalKey = clearOp.getRotKey();
+      auto clearLoadOp = originalKey.getDefiningOp<LoadKeyOp>();
+      auto maybeClearIndex =
+          clearLoadOp ? getConstantIndex(clearLoadOp) : std::nullopt;
+
+      // llvm::errs() << "  Merging key "
+      //              << (maybeClearIndex ? std::to_string(*maybeClearIndex) :
+      //              "?")
+      //              << ": removing clear and load\n";
+
+      // Replace all uses of the loaded key with the original key
+      loadOp.getRotKey().replaceAllUsesWith(originalKey);
+
+      // Remove the load operation
+      loadOp.erase();
+
+      // Remove the clear operation
+      clearOp.erase();
     }
-
-    // Third pass: Basic key merging within blocks
-    bool madeChanges = true;
-    unsigned iterationCount = 0;
-
-    // Keep iterating until no more pairs can be merged
-    while (madeChanges) {
-      madeChanges = false;
-      iterationCount++;
-
-      // Track ops to delete to avoid iterator invalidation
-      SmallVector<Operation *> opsToDelete;
-
-      auto walkResult = getOperation()->walk([&](LoadKeyOp loadOp) {
-        // Extract key identity from this load operation
-        auto maybeIdentity = RotationKeyIdentity::fromLoadKeyOp(loadOp);
-        if (!maybeIdentity) {
-          return WalkResult::advance();
-        }
-
-        RotationKeyIdentity keyIdentity = *maybeIdentity;
-
-        // Find optimizable pair
-        PairOptimizationWithStats optimization =
-            findOptimizablePairWithDistance(loadOp, keyIdentity);
-
-        if (!optimization.isValid()) {
-          return WalkResult::advance();
-        }
-
-        auto firstLoadOp = cast<LoadKeyOp>(optimization.firstLoad);
-
-        // Handle key_depth attribute if present (for compression)
-        if (loadOp->hasAttr("key_depth") && firstLoadOp->hasAttr("key_depth")) {
-          auto firstLevel =
-              firstLoadOp->getAttrOfType<IntegerAttr>("key_depth").getInt();
-          auto secondLevel =
-              loadOp->getAttrOfType<IntegerAttr>("key_depth").getInt();
-          if (firstLevel != secondLevel) {
-            return WalkResult::advance();  // Skip merging different levels
-          }
-        } else if (!firstLoadOp->hasAttr("key_depth") &&
-                   loadOp->hasAttr("key_depth")) {
-          firstLoadOp->setAttr("key_depth", loadOp->getAttr("key_depth"));
-        }
-
-        // Replace uses of the second load with the first one
-        loadOp.getRotKey().replaceAllUsesWith(
-            optimization.firstLoad->getResult(0));
-
-        // Track the second load and first clear for deletion
-        opsToDelete.push_back(loadOp);
-        opsToDelete.push_back(optimization.firstClear);
-
-        // Mark that we made changes
-        madeChanges = true;
-
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Merged rotation key pair with real distance "
-                   << optimization.realDistance << " (total ops: "
-                   << optimization.totalDistance << ")\n";);
-
-        return WalkResult::advance();
-      });
-
-      if (walkResult.wasInterrupted()) {
-        return signalPassFailure();
-      }
-
-      // Delete marked ops
-      for (Operation *op : opsToDelete) {
-        op->erase();
-      }
-    }
-
-    // Print statistics
-    LLVM_DEBUG(llvm::dbgs() << "MergeRotationKeys: Completed in "
-                            << iterationCount << " iterations\n");
   }
 
- private:
-  // Maximum distance (in non-key-management operations) for merging
-  // This threshold balances memory usage vs. deserialization overhead
-  static constexpr int maxMergeDistance = 10;
-
-  // Helper to check if an operation is a key management operation
-  bool isKeyManagementOp(Operation *op) {
-    return isa<LoadKeyOp, ClearKeyOp, PrefetchKeyOp, UseKeyOp, AssumeLoadedOp>(op);
-  }
-
-  // Helper to extract constant index value from a load_key operation
-  // Returns the constant index if available, either from:
-  // 1. Static rotation key type (e.g., !kmrt.rot_key<rotation_index = 5>)
-  // 2. Constant operand (e.g., kmrt.load_key %c5)
+  // Helper to extract constant index from LoadKeyOp
   std::optional<int64_t> getConstantIndex(LoadKeyOp loadOp) {
-    // First check if the key type has a static index
     auto rotKeyType = llvm::cast<RotKeyType>(loadOp.getRotKey().getType());
     if (rotKeyType.isStatic()) {
       return rotKeyType.getStaticIndex();
     }
 
-    // For dynamic keys, check if the index operand is a constant
     Value indexValue = loadOp.getIndex();
     if (auto constOp = indexValue.getDefiningOp<arith::ConstantOp>()) {
       if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
@@ -269,429 +342,983 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     return std::nullopt;
   }
 
-  // Reorder affine loop to reuse a pre-loaded key (static or constant-indexed)
-  bool reorderLoopForKeyReuse(ClearKeyOp clearOp) {
-    // Get the key being cleared
-    Value key = clearOp.getRotKey();
+  // Extend affine.if conditions in a loop to include preloop key merging
+  // Find which memref index contains a specific key by analyzing stores
+  std::optional<int64_t> findKeyInMemref(Value memref, int64_t targetKeyIndex) {
+    // Build a mapping of key_index -> memref_index by analyzing stores
+    DenseMap<int64_t, int64_t> keyToMemrefIndex;
 
-    // Find the load_key that produced this key
-    auto loadOp = key.getDefiningOp<LoadKeyOp>();
-    if (!loadOp) return false;
+    // Find all stores to this memref
+    for (auto user : memref.getUsers()) {
+      if (auto storeOp = dyn_cast<memref::StoreOp>(user)) {
+        if (storeOp.getMemRef() != memref) continue;
 
-    // Extract the constant rotation index (either from static type or constant operand)
-    auto maybeIndex = getConstantIndex(loadOp);
-    if (!maybeIndex) return false;
+        // Get the stored value (should be a rotation key)
+        Value storedKey = storeOp.getValueToStore();
 
-    int64_t staticIndex = *maybeIndex;
-
-    // Search forward from the clear_key to find affine loops
-    Operation *searchOp = clearOp->getNextNode();
-    int distance = 0;
-
-    while (searchOp && distance < maxMergeDistance * 2) {
-      // Check if this is an affine.for loop
-      if (auto affineLoop = dyn_cast<affine::AffineForOp>(searchOp)) {
-        // Check if the loop might load the same key
-        if (loopMightLoadKey(affineLoop, staticIndex)) {
-          LLVM_DEBUG(llvm::dbgs() << "Found affine loop that will reuse key "
-                                  << staticIndex << ", peeling iteration\n");
-
-          // Perform the loop transformation
-          peelIterationForKeyReuse(loadOp, clearOp, affineLoop, staticIndex);
-          return true;
+        // Trace back through any use_key operations to find the LoadKeyOp
+        while (auto useKeyOp = storedKey.getDefiningOp<UseKeyOp>()) {
+          storedKey = useKeyOp.getRotKey();
         }
-      }
 
-      // Count distance only for non-key-management operations
-      if (!isKeyManagementOp(searchOp)) {
-        distance++;
-      }
+        // Now check if we have a LoadKeyOp
+        LoadKeyOp loadKeyOp = storedKey.getDefiningOp<LoadKeyOp>();
+        if (!loadKeyOp) continue;
 
-      searchOp = searchOp->getNextNode();
-    }
+        // Extract the memref store index
+        if (storeOp.getIndices().size() != 1) continue;
+        Value storeIndexVal = storeOp.getIndices()[0];
 
-    return false;
-  }
+        // Extract the key index
+        auto maybeKeyIndex = getConstantIndex(loadKeyOp);
 
-  // Helper struct to hold info about a load in potentially nested loops
-  struct NestedLoadInfo {
-    LoadKeyOp loadOp;
-    ClearKeyOp clearOp;
-    SmallVector<affine::AffineForOp, 4> enclosingLoops;  // Innermost to outermost
-    SmallVector<int64_t, 4> targetIndices;  // Target index for each loop
-  };
-
-  // Find a load_key operation in nested loops that matches the target index
-  std::optional<NestedLoadInfo> findNestedLoadOp(affine::AffineForOp topLoop, int64_t targetIndex) {
-    NestedLoadInfo info;
-
-    // Walk the loop hierarchy to find the load
-    topLoop.walk([&](LoadKeyOp loadOp) {
-      Value indexValue = loadOp.getIndex();
-
-      // Trace back through index_cast
-      if (auto indexCastOp = indexValue.getDefiningOp<arith::IndexCastOp>()) {
-        indexValue = indexCastOp.getIn();
-      }
-
-      // Collect all enclosing affine loops
-      SmallVector<affine::AffineForOp, 4> loops;
-      SmallVector<Value, 4> loopIVs;
-      Operation *parent = loadOp->getParentOp();
-      while (parent) {
-        if (auto affineLoop = dyn_cast<affine::AffineForOp>(parent)) {
-          loops.push_back(affineLoop);
-          loopIVs.push_back(affineLoop.getInductionVar());
-        }
-        parent = parent->getParentOp();
-      }
-
-      // Check if this load uses ANY of the loop induction variables
-      bool usesLoopIV = false;
-      for (Value iv : loopIVs) {
-        if (indexValue == iv) {
-          usesLoopIV = true;
-          break;
-        }
-      }
-
-      if (!usesLoopIV || loops.empty()) {
-        return WalkResult::advance();
-      }
-
-      // Find which loop IV is used and check if targetIndex is in range
-      for (size_t i = 0; i < loops.size(); ++i) {
-        if (indexValue == loops[i].getInductionVar()) {
-          std::optional<int64_t> lb = loops[i].getConstantLowerBound();
-          std::optional<int64_t> ub = loops[i].getConstantUpperBound();
-
-          if (lb && ub && targetIndex >= *lb && targetIndex < *ub) {
-            // Found a match! Now collect target indices for all enclosing loops
-            info.loadOp = loadOp;
-            info.enclosingLoops = loops;  // Already innermost to outermost
-
-            // For the matching loop, target is targetIndex
-            // For outer loops, we need to compute what iteration would give us targetIndex
-            info.targetIndices.push_back(targetIndex);
-
-            // For outer loops (if any), assume iteration 0 for now
-            // This is a simplification - in BSGS, outer loop 0 with inner loop targetIndex
-            for (size_t j = i + 1; j < loops.size(); ++j) {
-              info.targetIndices.push_back(0);
+        // Case 1: Both load and store use constants
+        if (maybeKeyIndex && storeIndexVal.getDefiningOp<arith::ConstantOp>()) {
+          if (auto constOp = storeIndexVal.getDefiningOp<arith::ConstantOp>()) {
+            if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+              int64_t memrefIdx = intAttr.getInt();
+              int64_t keyIdx = *maybeKeyIndex;
+              keyToMemrefIndex[keyIdx] = memrefIdx;
             }
-
-            // Find the clear operation
-            for (Operation *user : loadOp.getRotKey().getUsers()) {
-              if (auto clearOp = dyn_cast<ClearKeyOp>(user)) {
-                info.clearOp = clearOp;
-                break;
+          }
+        }
+        // Case 2: Loop IV pattern - load key %iv, store to memref[%iv]
+        else if (auto blockArg = dyn_cast<BlockArgument>(storeIndexVal)) {
+          // Check if the load index is the same loop IV
+          if (loadKeyOp.getIndex() == storeIndexVal) {
+            // Pattern: memref[i] = key[i]
+            // Find the loop to get bounds
+            if (auto forOp = dyn_cast<affine::AffineForOp>(
+                    blockArg.getParentBlock()->getParentOp())) {
+              int64_t lb = forOp.getConstantLowerBound();
+              int64_t ub = forOp.getConstantUpperBound();
+              // For all i in [lb, ub), key[i] is stored at memref[i]
+              for (int64_t i = lb; i < ub; ++i) {
+                keyToMemrefIndex[i] = i;
               }
             }
-
-            return WalkResult::interrupt();
           }
         }
       }
-
-      return WalkResult::advance();
-    });
-
-    if (info.loadOp && info.clearOp) {
-      return info;
     }
+
+    // Look up the target key in our mapping
+    auto it = keyToMemrefIndex.find(targetKeyIndex);
+    if (it != keyToMemrefIndex.end()) {
+      return it->second;
+    }
+
     return std::nullopt;
   }
 
-  // Remap loop to reuse a pre-loaded key with conditional load/clear
-  void peelIterationForKeyReuse(LoadKeyOp preLoadOp, ClearKeyOp clearOp,
-                                affine::AffineForOp loop, int64_t targetIndex) {
-    OpBuilder builder(loop);
-    Location loc = loop.getLoc();
+  // Find and merge postloop load-key operations with loop clear-key operations
+  // Handle simple postloop pattern: loop that loads keys dynamically,
+  // followed by a postloop load of the same key
+  void findAndMergeSimplePostloopKeys(DataFlowSolver &solver) {
+    getOperation()->walk([&](LoadKeyOp postloopLoad) {
+      // Skip loads with key_depth (handled by findAndMergePostloopKeys)
+      if (postloopLoad->hasAttr("key_depth")) {
+        return;
+      }
 
-    // Find the load_key operation that might be in nested loops
-    auto maybeInfo = findNestedLoadOp(loop, targetIndex);
-    if (!maybeInfo) {
-      LLVM_DEBUG(llvm::dbgs() << "Could not find nested load for key " << targetIndex << "\n");
-      return;
-    }
+      // Extract constant index from postloop load
+      auto maybeIndex = getConstantIndex(postloopLoad);
+      if (!maybeIndex) return;
+      int64_t postloopKeyIndex = *maybeIndex;
 
-    NestedLoadInfo info = *maybeInfo;
-    LoadKeyOp loopLoadOp = info.loadOp;
-    ClearKeyOp loopClearOp = info.clearOp;
+      // Search backward for a loop that loads this key
+      Operation *searchOp = postloopLoad->getPrevNode();
+      int distance = 0;
 
-    // Wrap load_key with affine.if checking all enclosing loop IVs
-    builder.setInsertionPoint(loopLoadOp);
+      while (searchOp && distance < 50) {
+        if (auto affineLoop = dyn_cast<affine::AffineForOp>(searchOp)) {
+          // Check if this loop loads keys with the loop IV
+          LoadKeyOp loopLoad = nullptr;
+          ClearKeyOp loopClear = nullptr;
+          Value loopIV = affineLoop.getInductionVar();
 
-    // Collect all loop induction variables (innermost to outermost)
-    SmallVector<Value, 4> ivValues;
-    for (auto enclosingLoop : info.enclosingLoops) {
-      ivValues.push_back(enclosingLoop.getInductionVar());
-    }
+          affineLoop.walk([&](LoadKeyOp loadOp) {
+            // Check if this load uses the loop IV
+            Value loadIndex = loadOp.getIndex();
 
-    // Create affine condition: conjunction of (iv_i == targetIndex_i) for all loops
-    // For example: (d0 == 0 && d1 == 1) becomes (d0 - 0 == 0 && d1 - 1 == 0)
-    SmallVector<AffineExpr, 4> exprs;
-    SmallVector<bool, 4> eqFlags;
+            // Direct use of loop IV
+            if (loadIndex == loopIV) {
+              loopLoad = loadOp;
+            }
+            // Through index_cast
+            else if (auto castOp =
+                         loadIndex.getDefiningOp<arith::IndexCastOp>()) {
+              if (castOp.getIn() == loopIV) {
+                loopLoad = loadOp;
+              }
+            }
+          });
 
-    for (size_t i = 0; i < ivValues.size(); ++i) {
-      auto dimExpr = builder.getAffineDimExpr(i);
-      auto expr = dimExpr - info.targetIndices[i];
-      exprs.push_back(expr);
-      eqFlags.push_back(true);  // equality constraint
-    }
+          if (loopLoad) {
+            // Check if the key is cleared in the loop
+            affineLoop.walk([&](ClearKeyOp clearOp) {
+              Value clearedKey = clearOp.getRotKey();
+              // Trace through use_key operations
+              while (auto useKey = clearedKey.getDefiningOp<UseKeyOp>()) {
+                clearedKey = useKey.getRotKey();
+              }
+              // Check if it's clearing the loaded key
+              if (clearedKey == loopLoad.getResult()) {
+                loopClear = clearOp;
+              }
+            });
+          }
 
-    // Create integer set with multiple equality constraints (all must be true)
-    auto intSet = IntegerSet::get(ivValues.size(), 0, exprs, eqFlags);
+          if (loopLoad && loopClear) {
+            // Check if postloop key is within loop bounds
+            int64_t lb = affineLoop.getConstantLowerBound();
+            int64_t ub = affineLoop.getConstantUpperBound();
 
-    // Create affine.if - return dynamic key type
-    auto ifOp = builder.create<affine::AffineIfOp>(
-        loc, loopLoadOp.getRotKey().getType(), intSet, ivValues,
-        /*withElseRegion=*/true);
+            if (postloopKeyIndex >= lb && postloopKeyIndex < ub) {
+              llvm::errs()
+                  << "    Found simple postloop pattern: loop loads keys " << lb
+                  << " to " << ub << ", postloop loads key " << postloopKeyIndex
+                  << "\n";
 
-    // In the "then" region: use kmrt.use_key to reference the pre-loaded key
-    builder.setInsertionPointToStart(ifOp.getThenBlock());
-    auto useKeyOp = builder.create<UseKeyOp>(loc, loopLoadOp.getRotKey().getType(), preLoadOp.getRotKey());
-    builder.create<affine::AffineYieldOp>(loc, useKeyOp.getRotKey());
+              // Wrap the clear with affine.if to skip postloop key
+              OpBuilder builder(loopClear);
+              Location loc = loopClear.getLoc();
 
-    // In the "else" region: load normally
-    builder.setInsertionPointToStart(ifOp.getElseBlock());
-    Operation *clonedLoad = builder.clone(*loopLoadOp.getOperation());
-    builder.create<affine::AffineYieldOp>(loc, clonedLoad->getResult(0));
+              auto dimExpr = builder.getAffineDimExpr(0);
+              auto condExpr = dimExpr - postloopKeyIndex;
+              auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
 
-    // Replace uses of original load with affine.if result
-    loopLoadOp.getRotKey().replaceAllUsesWith(ifOp.getResult(0));
-    loopLoadOp.erase();
+              auto affineIf = builder.create<affine::AffineIfOp>(
+                  loc, condSet, ValueRange{loopIV}, /*withElseRegion=*/true);
 
-    // Erase the original clear operation before the loop
-    clearOp.erase();
+              // Move clear to else block
+              loopClear->moveBefore(&affineIf.getElseRegion().front(),
+                                    affineIf.getElseRegion().front().begin());
 
-    LLVM_DEBUG(llvm::dbgs() << "Peeled iteration for key " << targetIndex
-                            << " across " << ivValues.size() << " nested loops\n");
+              // Replace postloop load with assume_loaded
+              builder.setInsertionPoint(postloopLoad);
+              auto assumeOp = builder.create<AssumeLoadedOp>(
+                  postloopLoad.getLoc(), postloopLoad.getResult().getType(),
+                  postloopLoad.getIndex());
+              postloopLoad.getResult().replaceAllUsesWith(assumeOp.getResult());
+              postloopLoad.erase();
+
+              return;
+            }
+          }
+        }
+
+        if (!isa<LoadKeyOp, ClearKeyOp, UseKeyOp, AssumeLoadedOp>(searchOp)) {
+          distance++;
+        }
+        searchOp = searchOp->getPrevNode();
+      }
+    });
   }
 
-  // Reuse a key from inside a loop for a post-loop load
-  // Strategy: Skip clearing the key in the loop when iv == staticIndex,
-  // then the post-loop load will be merged by the basic merging pass
-  bool reuseLoopKeyForPostLoad(LoadKeyOp postLoadOp) {
-    // Extract constant index (either from static type or constant operand)
-    auto maybeIndex = getConstantIndex(postLoadOp);
-    if (!maybeIndex) return false;
+  void findAndMergePostloopKeys(DataFlowSolver &solver) {
+    // Walk all LoadKeyOp operations to find postloop loads
+    getOperation()->walk([&](LoadKeyOp loadOp) {
+      // Only process loads with key_depth attribute (bootstrap keys)
+      // This avoids interfering with regular BSGS baby step keys
+      if (!loadOp->hasAttr("key_depth")) {
+        return;
+      }
 
-    int64_t staticIndex = *maybeIndex;
+      // Extract constant index from this load
+      auto maybeIndex = getConstantIndex(loadOp);
+      if (!maybeIndex) return;
 
-    // Search backwards to find the affine loop
-    Operation *searchOp = postLoadOp->getPrevNode();
-    int distance = 0;
+      int64_t postloopKeyIndex = *maybeIndex;
 
-    while (searchOp && distance < maxMergeDistance * 2) {
-      if (auto affineLoop = dyn_cast<affine::AffineForOp>(searchOp)) {
-        if (loopMightLoadKey(affineLoop, staticIndex)) {
-          LLVM_DEBUG(llvm::dbgs() << "Found affine loop that loads key "
-                                  << staticIndex << ", skipping clear for reuse\n");
+      // Strategy 1: Search backward for any existing memref.load of this key
+      // This is more general and can find loads from earlier in the function
+      {
+        Operation *searchOp = loadOp->getPrevNode();
+        int distance = 0;
 
-          // Find the load and clear operations in the loop
-          // The load might be inside an affine.if if the first pass already transformed it
-          Block *loopBody = affineLoop.getBody();
-          ClearKeyOp loopClearOp;
-          Value loopKeyValue;
+        while (searchOp && distance < 100) {
+          // Skip loops - we'll handle them in strategy 2
+          if (isa<affine::AffineForOp>(searchOp)) {
+            searchOp = searchOp->getPrevNode();
+            continue;
+          }
 
-          for (Operation &op : loopBody->without_terminator()) {
-            // Check for direct load_key operations
-            if (auto loadOp = dyn_cast<LoadKeyOp>(&op)) {
-              Value indexValue = loadOp.getIndex();
-              if (auto indexCastOp = indexValue.getDefiningOp<arith::IndexCastOp>()) {
-                if (indexCastOp.getIn() == affineLoop.getInductionVar()) {
-                  loopKeyValue = loadOp.getRotKey();
+          // Look for memref.load operations that load this key
+          if (auto memLoad = dyn_cast<memref::LoadOp>(searchOp)) {
+            // Check if this is a load with a constant index
+            if (memLoad.getIndices().size() == 1) {
+              if (auto constIdx = memLoad.getIndices()[0]
+                                      .getDefiningOp<arith::ConstantOp>()) {
+                if (auto intAttr = dyn_cast<IntegerAttr>(constIdx.getValue())) {
+                  int64_t loadedIdx = intAttr.getInt();
+
+                  // Check if the memref contains this key at this index
+                  Value memref = memLoad.getMemRef();
+                  auto memrefContainsKey =
+                      findKeyInMemref(memref, postloopKeyIndex);
+
+                  if (memrefContainsKey && *memrefContainsKey == loadedIdx) {
+                    // Found an existing load of this key from a memref!
+                    // Now search forward to find a loop that clears this memref
+                    Operation *clearSearchOp = memLoad->getNextNode();
+                    int clearDist = 0;
+
+                    while (clearSearchOp && clearDist < 50) {
+                      if (auto clearLoop =
+                              dyn_cast<affine::AffineForOp>(clearSearchOp)) {
+                        // Check if this loop clears from the same memref
+                        bool clearsThisMemref = false;
+                        clearLoop.walk([&](ClearKeyOp clearOp) {
+                          Value clearedKey = clearOp.getRotKey();
+                          while (auto useKey =
+                                     clearedKey.getDefiningOp<UseKeyOp>()) {
+                            clearedKey = useKey.getRotKey();
+                          }
+                          if (auto clearMemLoad =
+                                  clearedKey.getDefiningOp<memref::LoadOp>()) {
+                            if (clearMemLoad.getMemRef() == memref) {
+                              clearsThisMemref = true;
+                            }
+                          }
+                        });
+
+                        if (clearsThisMemref) {
+                          llvm::errs()
+                              << "      Found existing memref.load of key "
+                              << postloopKeyIndex << " before clear loop\n";
+                          // Wrap the clear to skip this key index
+                          clearLoop.walk([&](ClearKeyOp clearOp) {
+                            Value clearedKey = clearOp.getRotKey();
+                            while (auto useKey =
+                                       clearedKey.getDefiningOp<UseKeyOp>()) {
+                              clearedKey = useKey.getRotKey();
+                            }
+                            if (auto clearMemLoad =
+                                    clearedKey
+                                        .getDefiningOp<memref::LoadOp>()) {
+                              if (clearMemLoad.getMemRef() == memref &&
+                                  clearMemLoad.getIndices().size() == 1 &&
+                                  clearMemLoad.getIndices()[0] ==
+                                      clearLoop.getInductionVar()) {
+                                wrapClearForPostloop(clearOp, loadedIdx,
+                                                     clearLoop);
+                              }
+                            }
+                          });
+
+                          // Replace postloop load with use of the existing
+                          // memref.load
+                          replacePostloopLoadWithExistingMemrefLoad(loadOp,
+                                                                    memLoad);
+                          return;
+                        }
+                      }
+
+                      if (!isa<LoadKeyOp, ClearKeyOp, UseKeyOp, AssumeLoadedOp>(
+                              clearSearchOp)) {
+                        clearDist++;
+                      }
+                      clearSearchOp = clearSearchOp->getNextNode();
+                    }
+                  }
                 }
               }
             }
-            // Check for affine.if operations that might contain load_key
-            if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(&op)) {
-              if (affineIfOp.getNumResults() > 0 &&
-                  isa<RotKeyType>(affineIfOp.getResult(0).getType())) {
-                loopKeyValue = affineIfOp.getResult(0);
+          }
+
+          if (!isa<LoadKeyOp, ClearKeyOp, UseKeyOp, AssumeLoadedOp>(searchOp)) {
+            distance++;
+          }
+
+          searchOp = searchOp->getPrevNode();
+        }
+      }  // End strategy 1
+
+      // Strategy 2: Fallback to original loop-based pattern matching
+      // Look for a loop immediately before the postloop load
+      {
+        Operation *searchOp = loadOp->getPrevNode();
+        int distance = 0;
+
+        while (searchOp && distance < 50) {
+          if (auto affineLoop = dyn_cast<affine::AffineForOp>(searchOp)) {
+            // Check if this loop has a pattern of:
+            // %val = memref.load %alloca[%iv]
+            // ...
+            // kmrt.clear_key %val
+
+            Value memrefAlloca = nullptr;
+            ClearKeyOp clearToWrap = nullptr;
+
+            affineLoop.walk([&](ClearKeyOp clearOp) {
+              Value clearedKey = clearOp.getRotKey();
+
+              // Trace back through any use_key operations to find the
+              // memref.load
+              while (auto useKeyOp = clearedKey.getDefiningOp<UseKeyOp>()) {
+                clearedKey = useKeyOp.getRotKey();
               }
-            }
-            // Find the clear operation
-            if (auto clearOp = dyn_cast<ClearKeyOp>(&op)) {
-              if (loopKeyValue && clearOp.getRotKey() == loopKeyValue) {
-                loopClearOp = clearOp;
+
+              if (auto memLoad = clearedKey.getDefiningOp<memref::LoadOp>()) {
+                // Check if the load uses the loop IV
+                Value loopIV = affineLoop.getInductionVar();
+                if (memLoad.getIndices().size() == 1 &&
+                    memLoad.getIndices()[0] == loopIV) {
+                  // This clear uses a value from memref[iv]
+                  memrefAlloca = memLoad.getMemRef();
+                  clearToWrap = clearOp;
+                  // llvm::errs() << "    Found postloop opportunity: loop
+                  // clears "
+                  //              << "memref[iv], postloop loads key "
+                  //              << postloopKeyIndex << "\n";
+                }
+              }
+            });
+
+            if (clearToWrap && memrefAlloca) {
+              // First, try to analyze what's actually in the memref
+              std::optional<int64_t> memrefIndex =
+                  findKeyInMemref(memrefAlloca, postloopKeyIndex);
+
+              // If we can't prove what's in the memref, make an assumption for
+              // epilogue loops
+              if (!memrefIndex) {
+                // For BSGS epilogue loops, assume memref[i] contains rotation
+                // key i
+                if (auto loopTypeAttr = affineLoop->getAttrOfType<StringAttr>(
+                        "bsgs.loop_type")) {
+                  if (loopTypeAttr.getValue() == "epilogue") {
+                    // Check if the postloop key is within loop bounds
+                    int64_t lb = affineLoop.getConstantLowerBound();
+                    int64_t ub = affineLoop.getConstantUpperBound();
+                    if (postloopKeyIndex >= lb && postloopKeyIndex < ub) {
+                      memrefIndex = postloopKeyIndex;
+                      llvm::errs()
+                          << "      Assuming epilogue loop pattern: memref["
+                          << postloopKeyIndex << "] contains key "
+                          << postloopKeyIndex << "\n";
+                    }
+                  }
+                }
+              }
+
+              if (memrefIndex) {
+                // Perform the postloop merge
+                wrapClearForPostloop(clearToWrap, *memrefIndex, affineLoop);
+                replacePostloopLoadWithMemrefAccess(loadOp, memrefAlloca,
+                                                    *memrefIndex);
+                return;
               }
             }
           }
 
-          if (!loopKeyValue || !loopClearOp) return false;
+          if (!isa<LoadKeyOp, ClearKeyOp, UseKeyOp, AssumeLoadedOp>(searchOp)) {
+            distance++;
+          }
 
-          // Wrap the clear_key with affine.if to skip clearing when iv == staticIndex
-          // Strategy: if (iv == staticIndex) { skip } else { clear }
-          OpBuilder builder(loopClearOp);
-          Location loc = loopClearOp.getLoc();
-          Value ivValue = affineLoop.getInductionVar();
-
-          // Create affine condition: iv == staticIndex
-          // Integer set: (d0 - staticIndex == 0)
-          auto dimExpr = builder.getAffineDimExpr(0);
-          auto expr = dimExpr - staticIndex;
-          auto intSet = IntegerSet::get(1, 0, {expr}, {true});  // equality constraint
-
-          // Create affine.if with else block
-          auto ifOp = builder.create<affine::AffineIfOp>(
-              loc, TypeRange{}, intSet, ValueRange{ivValue},
-              /*withElseRegion=*/true);
-
-          // Then block (iv == staticIndex): do nothing, just skip clearing
-          builder.setInsertionPointToStart(ifOp.getThenBlock());
-          // Empty then block - just yield immediately
-
-          // Else block (iv != staticIndex): clear the key
-          builder.setInsertionPointToStart(ifOp.getElseBlock());
-          builder.clone(*loopClearOp.getOperation());
-
-          // Erase the original clear
-          loopClearOp.erase();
-
-          // Now the key from iteration staticIndex will remain in memory
-          // Replace the post-loop load with assume_loaded
-          OpBuilder postLoopBuilder(postLoadOp);
-          auto assumeLoadedOp = postLoopBuilder.create<AssumeLoadedOp>(
-              postLoadOp.getLoc(),
-              postLoadOp.getRotKey().getType(),
-              postLoadOp.getIndex());
-
-          postLoadOp.getRotKey().replaceAllUsesWith(assumeLoadedOp.getRotKey());
-          postLoadOp.erase();
-
-          LLVM_DEBUG(llvm::dbgs() << "Replaced post-loop load with assume_loaded for key "
-                                  << staticIndex << "\n");
-
-          return true;
+          searchOp = searchOp->getPrevNode();
         }
-      }
+      }  // End strategy 2
+    });
+  }
 
-      if (!isKeyManagementOp(searchOp)) {
-        distance++;
-      }
+  // Wrap a ClearKeyOp with affine.if to skip a specific key index
+  void wrapClearForPostloop(ClearKeyOp clearOp, int64_t keyIndexToSkip,
+                            affine::AffineForOp loop) {
+    OpBuilder builder(clearOp);
+    Location loc = clearOp.getLoc();
+    Value loopIV = loop.getInductionVar();
 
-      searchOp = searchOp->getPrevNode();
+    // Create affine.if: if (iv == keyIndexToSkip) { skip } else { clear }
+    auto dimExpr = builder.getAffineDimExpr(0);
+    auto condExpr = dimExpr - keyIndexToSkip;
+    auto condSet =
+        IntegerSet::get(1, 0, {condExpr}, {true});  // true = equality
+
+    auto ifOp = builder.create<affine::AffineIfOp>(loc, TypeRange{}, condSet,
+                                                   ValueRange{loopIV},
+                                                   /*withElseRegion=*/true);
+
+    // Then branch: skip (empty)
+    // (already has implicit terminator)
+
+    // Else branch: do the clear
+    {
+      OpBuilder elseBuilder(ifOp.getElseBlock(), ifOp.getElseBlock()->begin());
+      elseBuilder.clone(*clearOp);
     }
 
-    return false;
+    // Erase the original clear
+    clearOp.erase();
+
+    llvm::errs() << "      Wrapped postloop clear with affine.if to skip key "
+                 << keyIndexToSkip << "\n";
   }
 
-  // Check if an affine loop (or nested loops inside it) might load a specific rotation key index
-  bool loopMightLoadKey(affine::AffineForOp loop, int64_t targetIndex) {
-    // Walk the loop body looking for load_key operations
-    bool found = false;
-    loop.walk([&](LoadKeyOp loadOp) {
-      // Check if this load uses a loop induction variable (from this loop or any nested loop)
-      Value indexValue = loadOp.getIndex();
+  // Replace a postloop LoadKeyOp with an existing memref.load
+  void replacePostloopLoadWithExistingMemrefLoad(
+      LoadKeyOp loadOp, memref::LoadOp existingMemLoad) {
+    OpBuilder builder(loadOp);
+    Location loc = loadOp.getLoc();
 
-      // Trace back through index_cast if present
-      if (auto indexCastOp = indexValue.getDefiningOp<arith::IndexCastOp>()) {
-        indexValue = indexCastOp.getIn();
+    // Create use_key from the existing memref.load
+    auto useKeyOp = builder.create<UseKeyOp>(loc, loadOp.getRotKey().getType(),
+                                             existingMemLoad.getResult());
+
+    // Replace the original load
+    loadOp.getRotKey().replaceAllUsesWith(useKeyOp.getRotKey());
+    loadOp.erase();
+
+    llvm::errs() << "      Replaced postloop load with existing memref.load\n";
+  }
+
+  // Replace a postloop LoadKeyOp with memref access
+  void replacePostloopLoadWithMemrefAccess(LoadKeyOp loadOp, Value memrefAlloca,
+                                           int64_t keyIndex) {
+    OpBuilder builder(loadOp);
+    Location loc = loadOp.getLoc();
+
+    // Create constant for the index
+    Value indexVal = builder.create<arith::ConstantIndexOp>(loc, keyIndex);
+
+    // Load from memref
+    Value loadedKey =
+        builder.create<memref::LoadOp>(loc, memrefAlloca, ValueRange{indexVal});
+
+    // Create use_key
+    auto useKeyOp =
+        builder.create<UseKeyOp>(loc, loadOp.getRotKey().getType(), loadedKey);
+
+    // Replace the original load
+    loadOp.getRotKey().replaceAllUsesWith(useKeyOp.getRotKey());
+    loadOp.erase();
+
+    llvm::errs() << "      Replaced postloop load with memref access at index "
+                 << keyIndex << "\n";
+  }
+
+  void extendAffineIfForPreloopKeys(
+      affine::AffineForOp loop,
+      SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>> &preloopKeys,
+      DataFlowSolver &solver) {
+    llvm::errs() << "    extendAffineIfForPreloopKeys: processing loop\n";
+
+    // Find existing affine.if operations created by BSGS pass
+    // These check outer_iv == 0 and load/use keys
+    SmallVector<affine::AffineIfOp> affineIfsToExtend;
+
+    loop.walk([&](affine::AffineIfOp ifOp) {
+      // Check if this is a load guard (returns a rotation key)
+      if (ifOp.getNumResults() > 0 &&
+          isa<RotKeyType>(ifOp.getResult(0).getType())) {
+        affineIfsToExtend.push_back(ifOp);
       }
-
-      // Collect all enclosing affine loops for this load
-      SmallVector<affine::AffineForOp, 4> enclosingLoops;
-      Operation *parent = loadOp->getParentOp();
-      while (parent) {
-        if (auto affineLoop = dyn_cast<affine::AffineForOp>(parent)) {
-          enclosingLoops.push_back(affineLoop);
-        }
-        parent = parent->getParentOp();
-      }
-
-      // Check if this load uses ANY enclosing loop's IV and if targetIndex is in range
-      for (auto enclosingLoop : enclosingLoops) {
-        if (indexValue == enclosingLoop.getInductionVar()) {
-          std::optional<int64_t> lb = enclosingLoop.getConstantLowerBound();
-          std::optional<int64_t> ub = enclosingLoop.getConstantUpperBound();
-
-          if (lb && ub && targetIndex >= *lb && targetIndex < *ub) {
-            found = true;
-            return WalkResult::interrupt();
-          }
-        }
-      }
-
-      return WalkResult::advance();
     });
 
-    return found;
+    llvm::errs() << "    Found " << affineIfsToExtend.size()
+                 << " affine.if operations to potentially extend\n";
+
+    for (auto ifOp : affineIfsToExtend) {
+      // For each preloop key, check if it should be merged here
+      for (auto &[preloopKeyIndex, preloadOp, clearOp] : preloopKeys) {
+        // Use affine set analysis to find merge conditions
+        auto mergeOpp = kmrt::analyzeMergeOpportunity(preloopKeyIndex, loop);
+
+        if (!mergeOpp || !mergeOpp->isValid()) continue;
+
+        llvm::errs() << "      Extending affine.if for preloop key "
+                     << preloopKeyIndex << "\n";
+
+        // Get the merge conditions (which IVs must equal what values)
+        // For now, handle simple case: one condition
+        if (mergeOpp->mergeConditions.empty()) continue;
+
+        auto [mergeIV, mergeValue] = mergeOpp->mergeConditions[0];
+
+        // Extend the affine.if to add: outer_iv == 0 && inner_iv == mergeValue
+        extendAffineIfCondition(ifOp, mergeIV, mergeValue, preloadOp);
+
+        // Remove the preloop clear operation
+        if (clearOp && clearOp.getOperation()->getBlock()) {
+          llvm::errs() << "      Removing preloop clear for key "
+                       << preloopKeyIndex << "\n";
+          clearOp.erase();
+        }
+      }
+    }
   }
 
-  // Find an optimizable pair of load/clear operations for the same key
-  PairOptimizationWithStats findOptimizablePairWithDistance(
-      LoadKeyOp loadOp, const RotationKeyIdentity &keyIdentity) {
-    PairOptimizationWithStats result;
-    Operation *currentOp = loadOp;
+  // Extend an existing affine.if to add a new condition branch
+  void extendAffineIfCondition(affine::AffineIfOp ifOp, Value newCondIV,
+                               int64_t newCondValue, LoadKeyOp preloadOp) {
+    OpBuilder builder(ifOp);
+    Location loc = ifOp.getLoc();
 
-    // Track the clear op associated with our load
-    Operation *secondClear = nullptr;
-    for (Operation *user : loadOp.getRotKey().getUsers()) {
-      if (auto clearOp = dyn_cast<ClearKeyOp>(user)) {
-        secondClear = clearOp;
+    // Create new affine.if with extended condition:
+    // if (outer_iv == 0 && inner_iv == K) { use_preloaded }
+    // else { original_if }
+
+    // Build condition: inner_iv == K
+    auto dimExpr = builder.getAffineDimExpr(0);
+    auto condExpr = dimExpr - newCondValue;
+    auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
+
+    auto newIfOp = builder.create<affine::AffineIfOp>(
+        loc, ifOp.getResultTypes(), condSet, ValueRange{newCondIV},
+        /*withElseRegion=*/true);
+
+    // Then branch: use preloaded key
+    {
+      OpBuilder thenBuilder(newIfOp.getThenBlock(),
+                            newIfOp.getThenBlock()->begin());
+      // Use the result type from the original affine.if to ensure type
+      // compatibility
+      auto useKeyOp = thenBuilder.create<UseKeyOp>(
+          loc, ifOp.getResultTypes()[0], preloadOp.getRotKey());
+      thenBuilder.create<affine::AffineYieldOp>(loc, useKeyOp.getRotKey());
+    }
+
+    // Else branch: clone original affine.if
+    {
+      OpBuilder elseBuilder(newIfOp.getElseBlock(),
+                            newIfOp.getElseBlock()->begin());
+      IRMapping mapping;
+      auto clonedIf =
+          cast<affine::AffineIfOp>(elseBuilder.clone(*ifOp, mapping));
+      elseBuilder.create<affine::AffineYieldOp>(loc, clonedIf.getResult(0));
+    }
+
+    // Replace uses and erase original
+    ifOp.getResult(0).replaceAllUsesWith(newIfOp.getResult(0));
+    ifOp.erase();
+
+    llvm::errs() << "      Successfully extended affine.if condition\n";
+  }
+
+  // Create standalone merge for loops without existing affine.if guards
+  void createStandaloneMerge(
+      affine::AffineForOp loop,
+      SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>> &preloopKeys,
+      DataFlowSolver &solver) {
+    llvm::errs()
+        << "    createStandaloneMerge: checking for standalone opportunities\n";
+
+    // Find LoadKeyOp operations in the loop and collect all preloop keys for
+    // each
+    DenseMap<LoadKeyOp, SmallVector<int64_t>> loadToPreloopKeys;
+
+    loop.walk([&](LoadKeyOp loadOp) {
+      // Check if this load's index value uses the loop IV
+      Value indexValue = loadOp.getIndex();
+
+      // Check if it's a direct use of IV (with or without index_cast)
+      Value loopIV = loop.getInductionVar();
+
+      bool usesLoopIV = false;
+
+      // Direct use of loop IV
+      if (indexValue == loopIV) {
+        usesLoopIV = true;
+      }
+      // Try to trace through index_cast
+      else if (auto castOp = indexValue.getDefiningOp<arith::IndexCastOp>()) {
+        if (castOp.getIn() == loopIV) {
+          usesLoopIV = true;
+        }
+      }
+
+      if (usesLoopIV) {
+        // This load uses the loop IV directly - collect ALL preloop keys
+        for (auto &[preloopKeyIndex, preloadOp, clearOp] : preloopKeys) {
+          loadToPreloopKeys[loadOp].push_back(preloopKeyIndex);
+          llvm::errs() << "      Found load to wrap for key " << preloopKeyIndex
+                       << "\n";
+        }
+      }
+    });
+
+    // Wrap each LoadKeyOp once with all its preloop keys
+    SmallVector<std::pair<Value, int64_t>> wrappedResults;
+    for (auto &[loadOp, keyIndices] : loadToPreloopKeys) {
+      Value newResult = wrapLoadWithAffineIfMultipleKeys(loadOp, keyIndices,
+                                                         loop, preloopKeys);
+      if (newResult) {
+        for (int64_t keyIndex : keyIndices) {
+          wrappedResults.push_back({newResult, keyIndex});
+        }
+      }
+    }
+
+    // Wrap ClearKeyOp operations
+    SmallVector<std::pair<ClearKeyOp, SmallVector<int64_t>>> clearsToWrap;
+    loop.walk([&](ClearKeyOp clearOp) {
+      Value key = clearOp.getRotKey();
+
+      // Check if this clear corresponds to a wrapped load's new result
+      for (auto &[wrappedResult, preloopKeyIndex] : wrappedResults) {
+        if (key == wrappedResult) {
+          SmallVector<int64_t> keysToSkip;
+          keysToSkip.push_back(preloopKeyIndex);
+          clearsToWrap.push_back({clearOp, keysToSkip});
+          llvm::errs() << "      Found clear to wrap, skipping key "
+                       << preloopKeyIndex << "\n";
+          break;
+        }
+      }
+    });
+
+    // Wrap each ClearKeyOp with affine.if
+    for (auto &[clearOp, keysToSkip] : clearsToWrap) {
+      wrapClearWithAffineIf(clearOp, keysToSkip, loop);
+    }
+
+    // Remove preloop clears
+    for (auto &[preloopKeyIndex, preloadOp, clearOp] : preloopKeys) {
+      if (clearOp && clearOp.getOperation()->getBlock()) {
+        llvm::errs() << "      Removing preloop clear for key "
+                     << preloopKeyIndex << "\n";
+        clearOp.erase();
+      }
+    }
+  }
+
+  // Wrap a LoadKeyOp with affine.if for preloop merge (single key)
+  Value wrapLoadWithAffineIf(
+      LoadKeyOp loadOp, int64_t preloopKeyIndex, affine::AffineForOp loop,
+      SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>> &preloopKeys) {
+    OpBuilder builder(loadOp);
+    Location loc = loadOp.getLoc();
+    Value loopIV = loop.getInductionVar();
+
+    // Find the preload operation
+    LoadKeyOp preloadOp = nullptr;
+    for (auto &[keyIndex, preload, clear] : preloopKeys) {
+      if (keyIndex == preloopKeyIndex) {
+        preloadOp = preload;
         break;
       }
     }
-    if (!secondClear) return result;
+    if (!preloadOp) return nullptr;
 
-    // Walk backwards looking for matching load/clear pair
-    while ((currentOp = currentOp->getPrevNode())) {
-      if (auto existingLoad = dyn_cast<LoadKeyOp>(currentOp)) {
-        // Check if this load operation has the same key identity
-        auto maybeExistingIdentity =
-            RotationKeyIdentity::fromLoadKeyOp(existingLoad);
-        if (!maybeExistingIdentity) continue;
+    // Create affine.if: if (iv == preloopKeyIndex) { use preloaded } else {
+    // load }
+    auto dimExpr = builder.getAffineDimExpr(0);
+    auto condExpr = dimExpr - preloopKeyIndex;
+    auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
 
-        RotationKeyIdentity existingIdentity = *maybeExistingIdentity;
+    auto ifOp = builder.create<affine::AffineIfOp>(
+        loc, loadOp.getRotKey().getType(), condSet, ValueRange{loopIV},
+        /*withElseRegion=*/true);
 
-        // Check if the key identities match
-        if (keyIdentity.matches(existingIdentity)) {
-          // Find its associated clear op
-          Operation *firstClear = nullptr;
-          for (Operation *user : existingLoad.getRotKey().getUsers()) {
-            if (auto clearOp = dyn_cast<ClearKeyOp>(user)) {
-              firstClear = clearOp;
-              break;
-            }
-          }
+    // Then branch: use preloaded key
+    {
+      OpBuilder thenBuilder(ifOp.getThenBlock(), ifOp.getThenBlock()->begin());
+      auto useKeyOp = thenBuilder.create<UseKeyOp>(
+          loc, loadOp.getRotKey().getType(), preloadOp.getRotKey());
+      thenBuilder.create<affine::AffineYieldOp>(loc, useKeyOp.getRotKey());
+    }
 
-          if (!firstClear) continue;
+    // Else branch: clone original load
+    {
+      OpBuilder elseBuilder(ifOp.getElseBlock(), ifOp.getElseBlock()->begin());
+      IRMapping mapping;
+      auto clonedLoad = cast<LoadKeyOp>(elseBuilder.clone(*loadOp, mapping));
+      elseBuilder.create<affine::AffineYieldOp>(loc, clonedLoad.getRotKey());
+    }
 
-          // Verify firstClear comes before our second load
-          if (firstClear->isBeforeInBlock(loadOp)) {
-            // Count operations between firstClear and loadOp
-            int realDistance = 0;
-            int totalOps = 0;
+    // Replace uses and erase original
+    loadOp.getRotKey().replaceAllUsesWith(ifOp.getResult(0));
+    loadOp.erase();
 
-            Operation *walkOp = firstClear->getNextNode();
-            while (walkOp && walkOp != loadOp) {
-              totalOps++;
-              if (!isKeyManagementOp(walkOp)) {
-                realDistance++;
-              }
-              walkOp = walkOp->getNextNode();
-            }
+    llvm::errs() << "      Wrapped LoadKeyOp with affine.if for key "
+                 << preloopKeyIndex << "\n";
 
-            // Check if within distance threshold
-            if (realDistance <= maxMergeDistance) {
-              result.firstLoad = existingLoad;
-              result.firstClear = firstClear;
-              result.realDistance = realDistance;
-              result.totalDistance = totalOps;
+    return ifOp.getResult(0);
+  }
 
-              LLVM_DEBUG(llvm::dbgs()
-                             << "Found optimal pair for rotation key"
-                             << " with real distance " << realDistance
-                             << " (total ops: " << totalOps << ")\n";);
-              return result;
-            }
-          }
+  // Wrap a LoadKeyOp with nested affine.if for multiple preloop keys
+  Value wrapLoadWithAffineIfMultipleKeys(
+      LoadKeyOp loadOp, SmallVector<int64_t> &preloopKeyIndices,
+      affine::AffineForOp loop,
+      SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>> &preloopKeys) {
+    // If only one key, use the simpler single-key version
+    if (preloopKeyIndices.size() == 1) {
+      return wrapLoadWithAffineIf(loadOp, preloopKeyIndices[0], loop,
+                                  preloopKeys);
+    }
+
+    OpBuilder builder(loadOp);
+    Location loc = loadOp.getLoc();
+    Value loopIV = loop.getInductionVar();
+
+    // Build nested affine.if structure:
+    // if (iv == key[0]) { use key[0] }
+    // else { if (iv == key[1]) { use key[1] }
+    //        else { ... if (iv == key[n]) { use key[n] }
+    //               else { original load } } }
+
+    // Helper to recursively build nested ifs
+    std::function<Value(size_t)> buildNestedIf = [&](size_t keyIdx) -> Value {
+      if (keyIdx >= preloopKeyIndices.size()) {
+        // Base case: clone the original load
+        IRMapping mapping;
+        auto clonedLoad = cast<LoadKeyOp>(builder.clone(*loadOp, mapping));
+        return clonedLoad.getRotKey();
+      }
+
+      int64_t preloopKeyIndex = preloopKeyIndices[keyIdx];
+
+      // Find the preload operation for this key
+      LoadKeyOp preloadOp = nullptr;
+      for (auto &[keyIndex, preload, clear] : preloopKeys) {
+        if (keyIndex == preloopKeyIndex) {
+          preloadOp = preload;
+          break;
         }
       }
-    }
+      if (!preloadOp) return buildNestedIf(keyIdx + 1);
+
+      // Create affine.if for this key
+      auto dimExpr = builder.getAffineDimExpr(0);
+      auto condExpr = dimExpr - preloopKeyIndex;
+      auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
+
+      auto ifOp = builder.create<affine::AffineIfOp>(
+          loc, loadOp.getRotKey().getType(), condSet, ValueRange{loopIV},
+          /*withElseRegion=*/true);
+
+      // Mark nested affine.if operations (not the outermost one) with nesting
+      // level so the emitter can generate unique variable names with suffix
+      if (keyIdx > 0) {
+        ifOp->setAttr("nesting_level", builder.getI64IntegerAttr(keyIdx));
+      }
+
+      // Then branch: use preloaded key
+      {
+        OpBuilder thenBuilder(ifOp.getThenBlock(),
+                              ifOp.getThenBlock()->begin());
+        auto useKeyOp = thenBuilder.create<UseKeyOp>(
+            loc, loadOp.getRotKey().getType(), preloadOp.getRotKey());
+        thenBuilder.create<affine::AffineYieldOp>(loc, useKeyOp.getRotKey());
+      }
+
+      // Else branch: recursively build the next nested if or the load
+      {
+        OpBuilder elseBuilder(ifOp.getElseBlock(),
+                              ifOp.getElseBlock()->begin());
+        builder.setInsertionPointToStart(ifOp.getElseBlock());
+        Value elseResult = buildNestedIf(keyIdx + 1);
+        builder.setInsertionPointToEnd(ifOp.getElseBlock());
+        builder.create<affine::AffineYieldOp>(loc, elseResult);
+      }
+
+      llvm::errs() << "      Wrapped LoadKeyOp with affine.if for key "
+                   << preloopKeyIndex << "\n";
+
+      return ifOp.getResult(0);
+    };
+
+    // Build the nested structure starting from the first key
+    builder.setInsertionPoint(loadOp);
+    Value result = buildNestedIf(0);
+
+    // Replace uses and erase original
+    loadOp.getRotKey().replaceAllUsesWith(result);
+    loadOp.erase();
+
     return result;
+  }
+
+  // Wrap a ClearKeyOp with affine.if to skip certain keys
+  void wrapClearWithAffineIf(ClearKeyOp clearOp,
+                             SmallVector<int64_t> &keysToSkip,
+                             affine::AffineForOp loop) {
+    OpBuilder builder(clearOp);
+    Location loc = clearOp.getLoc();
+    Value loopIV = loop.getInductionVar();
+
+    // Create nested affine.if for each key to skip
+    // Structure: if (iv == key1) {} else { if (iv == key2) {} else { clear } }
+
+    Operation *lastOp = clearOp;
+    for (int64_t keyIndex : keysToSkip) {
+      auto dimExpr = builder.getAffineDimExpr(0);
+      auto condExpr = dimExpr - keyIndex;
+      auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
+
+      builder.setInsertionPoint(lastOp);
+      auto ifOp = builder.create<affine::AffineIfOp>(loc, TypeRange{}, condSet,
+                                                     ValueRange{loopIV},
+                                                     /*withElseRegion=*/true);
+
+      // Then branch: empty (skip clear)
+      // Else branch will be filled in next iteration or with the clear
+
+      lastOp = ifOp;
+    }
+
+    // Move the clear into the innermost else block before the terminator
+    if (auto ifOp = dyn_cast<affine::AffineIfOp>(lastOp)) {
+      Block *elseBlock = ifOp.getElseBlock();
+      // If the else block has a terminator, insert before it
+      if (!elseBlock->empty() &&
+          elseBlock->back().hasTrait<OpTrait::IsTerminator>()) {
+        clearOp->moveBefore(&elseBlock->back());
+      } else {
+        clearOp->moveBefore(elseBlock, elseBlock->end());
+      }
+      llvm::errs() << "      Wrapped ClearKeyOp with affine.if\n";
+    }
+  }
+
+  // Peel key management (loads/clears) out of inner loops for better overlap
+  void peelInnerLoopKeyManagement(affine::AffineForOp outerLoop) {
+    // llvm::errs() << "  Analyzing outer loop for peeling opportunities\n";
+
+    // Find the inner loop
+    affine::AffineForOp innerLoop = nullptr;
+    outerLoop.walk([&](affine::AffineForOp loop) {
+      if (loop != outerLoop && !innerLoop) {
+        innerLoop = loop;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (!innerLoop) {
+      llvm::errs() << "    No inner loop found\n";
+      return;
+    }
+
+    // llvm::errs() << "    Found inner loop, checking for load/clear
+    // patterns\n";
+
+    // Find affine.if operations for loads and clears in the inner loop
+    affine::AffineIfOp loadIf = nullptr;
+    affine::AffineIfOp clearIf = nullptr;
+    Value memrefAlloca = nullptr;
+
+    innerLoop.walk([&](affine::AffineIfOp ifOp) {
+      // Check if this is a load guard (returns a rotation key)
+      if (ifOp.getNumResults() > 0 &&
+          isa<RotKeyType>(ifOp.getResult(0).getType())) {
+        // Check if the then block contains a LoadKeyOp
+        bool hasLoad = false;
+        ifOp.getThenBlock()->walk([&](LoadKeyOp) {
+          hasLoad = true;
+          return WalkResult::interrupt();
+        });
+        if (hasLoad) {
+          loadIf = ifOp;
+          // Find memref.store to identify the allocation
+          ifOp.getThenBlock()->walk([&](memref::StoreOp storeOp) {
+            memrefAlloca = storeOp.getMemRef();
+            return WalkResult::interrupt();
+          });
+        }
+      } else if (ifOp.getNumResults() == 0) {
+        // Check if this is a clear guard
+        bool hasClear = false;
+        ifOp.getThenBlock()->walk([&](ClearKeyOp) {
+          hasClear = true;
+          return WalkResult::interrupt();
+        });
+        if (hasClear) {
+          clearIf = ifOp;
+        }
+      }
+    });
+
+    if (!loadIf || !clearIf || !memrefAlloca) {
+      // llvm::errs() << "    No load/clear pattern found suitable for
+      // peeling\n";
+      return;
+    }
+
+    // llvm::errs() << "    Found load/clear pattern, peeling key management\n";
+
+    OpBuilder builder(innerLoop);
+    Location loc = innerLoop.getLoc();
+
+    // Extract the condition from loadIf (e.g., outer_iv == 0)
+    IntegerSet loadCondSet = loadIf.getIntegerSet();
+    ValueRange loadCondOperands = loadIf.getOperands();
+
+    // Extract the condition from clearIf (e.g., outer_iv == last)
+    IntegerSet clearCondSet = clearIf.getIntegerSet();
+    ValueRange clearCondOperands = clearIf.getOperands();
+
+    // Get loop bounds
+    int64_t lowerBound = innerLoop.getConstantLowerBound();
+    int64_t upperBound = innerLoop.getConstantUpperBound();
+
+    // Create load loop before inner loop
+    auto loadGuard = builder.create<affine::AffineIfOp>(
+        loc, TypeRange{}, loadCondSet, loadCondOperands,
+        /*withElseRegion=*/false);
+
+    OpBuilder loadBuilder(loadGuard.getThenBlock(),
+                          loadGuard.getThenBlock()->begin());
+    auto loadLoop =
+        loadBuilder.create<affine::AffineForOp>(loc, lowerBound, upperBound);
+
+    // Build load loop body
+    OpBuilder loadBodyBuilder(loadLoop.getBody(), loadLoop.getBody()->begin());
+    Value loadLoopIV = loadLoop.getInductionVar();
+
+    // Clone the load operations from the then block
+    IRMapping loadMapping;
+    loadMapping.map(innerLoop.getInductionVar(), loadLoopIV);
+
+    for (auto &op : *loadIf.getThenBlock()) {
+      if (!isa<affine::AffineYieldOp>(op)) {
+        loadBodyBuilder.clone(op, loadMapping);
+      }
+    }
+
+    // Modify inner loop to only use keys (replace loadIf with just memref.load
+    // + use_key)
+    builder.setInsertionPoint(loadIf);
+    Value innerLoopIV = innerLoop.getInductionVar();
+    auto memrefLoad = builder.create<memref::LoadOp>(loc, memrefAlloca,
+                                                     ValueRange{innerLoopIV});
+    auto useKey = builder.create<UseKeyOp>(loc, loadIf.getResult(0).getType(),
+                                           memrefLoad.getResult());
+
+    loadIf.getResult(0).replaceAllUsesWith(useKey.getResult());
+    loadIf.erase();
+
+    // Create clear loop after inner loop
+    builder.setInsertionPointAfter(innerLoop);
+    auto clearGuard = builder.create<affine::AffineIfOp>(
+        loc, TypeRange{}, clearCondSet, clearCondOperands,
+        /*withElseRegion=*/false);
+
+    OpBuilder clearBuilder(clearGuard.getThenBlock(),
+                           clearGuard.getThenBlock()->begin());
+    auto clearLoop =
+        clearBuilder.create<affine::AffineForOp>(loc, lowerBound, upperBound);
+
+    // Build clear loop body
+    OpBuilder clearBodyBuilder(clearLoop.getBody(),
+                               clearLoop.getBody()->begin());
+    Value clearLoopIV = clearLoop.getInductionVar();
+
+    // Clone the clear operations from the then block
+    IRMapping clearMapping;
+    clearMapping.map(innerLoop.getInductionVar(), clearLoopIV);
+
+    for (auto &op : *clearIf.getThenBlock()) {
+      if (!isa<affine::AffineYieldOp>(op)) {
+        clearBodyBuilder.clone(op, clearMapping);
+      }
+    }
+
+    // Remove the clear guard from inner loop
+    clearIf.erase();
+
+    llvm::errs() << "    Successfully peeled load and clear loops\n";
   }
 };
 

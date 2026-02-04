@@ -49,7 +49,13 @@ def MergeRotationKeys : Pass<"kmrt-merge-rotation-keys"> {
     "mlir::heir::kmrt::KMRTDialect",
     "mlir::affine::AffineDialect",
     "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect",
     "mlir::scf::SCFDialect"
+  ];
+
+  let options = [
+    Option<"enableLoopPeeling", "enable-loop-peeling", "bool", "true",
+           "Enable loop peeling optimization to extract key loads/clears">
   ];
 }
 

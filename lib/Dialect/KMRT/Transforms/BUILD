@@ -43,12 +43,58 @@ cc_library(
     ],
 )
 
+
+cc_library(
+    name = "RotationKeyLivenessDFA",
+    srcs = ["RotationKeyLivenessDFA.cpp"],
+    hdrs = ["RotationKeyLivenessDFA.h"],
+    deps = [
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+cc_library(
+    name = "AffineSetAnalysis",
+    srcs = ["AffineSetAnalysis.cpp"],
+    hdrs = ["AffineSetAnalysis.h"],
+    deps = [
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
 cc_library(
     name = "MergeRotationKeys",
     srcs = ["MergeRotationKeys.cpp"],
     hdrs = [
         "MergeRotationKeys.h",
     ],
+    deps = [
+        ":AffineSetAnalysis",
+        ":RotationKeyLivenessDFA",
+        ":pass_inc_gen",
+        "@heir//lib/Dialect/KMRT/IR:Dialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
     deps = [
         ":pass_inc_gen",
         "@heir//lib/Dialect/KMRT/IR:Dialect",
