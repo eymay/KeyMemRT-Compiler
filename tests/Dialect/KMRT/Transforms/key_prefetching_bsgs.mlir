@@ -42,19 +42,20 @@ func.func @bsgs_key_prefetching(%cc: !cc, %ct: !ct_L5) -> !ct_L5 {
 
   %c3 = arith.constant {bsgs.tunable_param = "baby_step_size"} 3 : index
 
-  // Outer loop (giant steps): iterates 0 to 4 (5 iterations)
+  // Outer loop (giant steps): iterates 0 to #map()[%c3] (symbolic bound)
   // Giant step indices: 0*3=0, 1*3=3, 2*3=6, 3*3=9, 4*3=12
-  // With threshold=30 and loop cost ~26, prefetch distance = 1
-  // Prefetch giant step key 0 before the outer loop
+  // New integrated prefetching strategy:
+  // 1. Prefetch first iteration (0*3=0) before the outer loop
+  // 2. Inside the loop, prefetch next iteration (outer_iv+1)*3 with guard condition
 
-  // CHECK: %[[C0_OUTER:.*]] = arith.constant 0 : i64
-  // CHECK-NEXT: kmrt.prefetch_key %[[C0_OUTER]]
+  // CHECK: %[[C0:.*]] = arith.constant 0 : index
+  // CHECK: %[[FIRST_GIANT:.*]] = affine.apply #{{.*}}(%[[C0]])[%c3]
+  // CHECK: %[[FIRST_GIANT_I64:.*]] = arith.index_cast %[[FIRST_GIANT]]
+  // CHECK: kmrt.prefetch_key %[[FIRST_GIANT_I64]]
 
   // CHECK: %[[RESULT:.*]] = affine.for %[[OUTER_IV:.*]] = 0 to
   %result = affine.for %outer_iv = 0 to #map()[%c3] iter_args(%acc_outer = %ct_init) -> (!ct_L5) {
-    // Prefetch next giant step iteration (outer_iv + 1) inside the outer loop
-    // This is placed at the beginning of the outer loop body
-    // The prefetch computes the key index for the next iteration: (outer_iv + 1) * step
+    // Prefetch next outer iteration at the BEGINNING of the loop
     // CHECK: affine.if #{{.*}}(%[[OUTER_IV]])[%c3] {
     // CHECK:   %[[NEXT_OUTER_IV:.*]] = affine.apply
     // CHECK:   %[[NEXT_GIANT_IDX:.*]] = affine.apply #{{.*}}(%[[NEXT_OUTER_IV]])[%c3]
@@ -72,17 +73,17 @@ func.func @bsgs_key_prefetching(%cc: !cc, %ct: !ct_L5) -> !ct_L5 {
     // CHECK: kmrt.clear_key %[[GIANT_KEY]]
     kmrt.clear_key %giant_key : <>
 
-    // Inner loop (baby steps): iterates 0 to 2 (3 iterations)
+    // Inner loop (baby steps): iterates 0 to #map2(%c3)
     // Prefetch baby step key 0 before the inner loop
 
-    // CHECK: %[[C0_INNER:.*]] = arith.constant 0 : i64
-    // CHECK-NEXT: kmrt.prefetch_key %[[C0_INNER]]
+    // CHECK: %[[C0_INNER:.*]] = arith.constant 0 : index
+    // CHECK: %[[FIRST_BABY_I64:.*]] = arith.index_cast %[[C0_INNER]]
+    // CHECK: kmrt.prefetch_key %[[FIRST_BABY_I64]]
 
     // CHECK: %[[RESULT_INNER:.*]] = affine.for %[[INNER_IV:.*]] = 0 to
     %result_inner = affine.for %inner_iv = 0 to #map2(%c3) iter_args(%acc_inner = %acc_outer) -> (!ct_L5) {
-      // Prefetch next baby step iteration (inner_iv + 1) inside the inner loop
-      // For baby steps, the index is just inner_iv (identity map), so prefetch is just inner_iv + 1
-      // CHECK: affine.if #{{.*}}(%[[INNER_IV]], %c3) {
+      // Prefetch next baby step iteration inside the inner loop
+      // CHECK: affine.if #{{.*}}(%[[INNER_IV]])[%c3] {
       // CHECK:   %[[NEXT_INNER_IV:.*]] = affine.apply
       // CHECK:   %[[NEXT_INNER_I64:.*]] = arith.index_cast %[[NEXT_INNER_IV]]
       // CHECK:   kmrt.prefetch_key %[[NEXT_INNER_I64]]
@@ -102,6 +103,7 @@ func.func @bsgs_key_prefetching(%cc: !cc, %ct: !ct_L5) -> !ct_L5 {
       %ct_add = openfhe.add %cc, %acc_inner, %ct_mul : (!cc, !ct_L5, !ct_L5) -> !ct_L5
       affine.yield %ct_add : !ct_L5
     }
+
     affine.yield %result_inner : !ct_L5
   }
 

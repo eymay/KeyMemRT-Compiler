@@ -9,23 +9,31 @@ def KMRTKeyPrefetching : Pass<"kmrt-key-prefetching"> {
     This pass inserts prefetch_key operations before load_key operations to
     enable asynchronous key loading and reduce latency.
 
-    The pass analyzes operation costs and inserts prefetches at optimal points:
+    The pass has three modes:
     - For sequential code: Walk backwards from each load_key and insert prefetch_key
       when accumulated cost reaches the threshold
-    - For affine loops: Insert prefetches for the first N iterations before the loop,
-      and inside the loop insert prefetches for iteration (i + N) wrapped in affine.if
-      to avoid prefetching beyond loop bounds
+    - For affine loops: Create a separate prefetch loop before the main loop that
+      prefetches all keys in the same order they are used in the main loop
+    - Runtime delegated (--runtime-delegated): Collect all keys in execution order
+      and emit them in a memref at the beginning of the program, allowing the runtime
+      to fully control when keys are prefetched. The order is preserved exactly using
+      affine loops and memref stores.
 
-    Operation costs are based on FHE operation complexity:
+    For loops, the pass:
+    1. Identifies all load_key operations in the loop
+    2. Filters out keys that have a clear_key before the load_key (no need to prefetch)
+    3. Creates a prefetch loop with the same bounds as the main loop
+    4. In the prefetch loop, prefetches each key in the same order
+
+    Operation costs are based on FHE operation complexity (for sequential code only):
     - Add/Sub: 1
     - Mul: 10
     - Rotation: 15
     - Bootstrap: 100
     - etc.
 
-    The prefetch distance is determined by the cost threshold (default: 50),
-    which represents the minimum cumulative cost of operations that should
-    execute between prefetch and load.
+    The prefetch threshold (default: 50) determines the minimum cumulative cost
+    of operations that should execute between prefetch and load in sequential code.
 
     Example transformation for sequential code:
 
@@ -65,48 +73,57 @@ def KMRTKeyPrefetching : Pass<"kmrt-key-prefetching"> {
       %iv_i64 = arith.index_cast %iv : index to i64
       %rk = kmrt.load_key %iv_i64 : !kmrt.rot_key
       %ct_rot = openfhe.rot %cc, %ct, %rk
-      kmrt.clear_key %rk
       // ... more operations ...
     }
     ```
 
-    After (with prefetch distance of 3 iterations):
+    After:
     ```mlir
-    %c1 = arith.constant 1 : i64
-    kmrt.prefetch_key %c1
-    %c2 = arith.constant 2 : i64
-    kmrt.prefetch_key %c2
-    %c3 = arith.constant 3 : i64
-    kmrt.prefetch_key %c3
+    // Prefetch loop with same bounds
+    affine.for %piv = 1 to 10 {
+      %piv_i64 = arith.index_cast %piv : index to i64
+      kmrt.prefetch_key %piv_i64
+    }
 
+    // Main loop (unchanged)
     affine.for %iv = 1 to 10 {
-      // Prefetch for iteration (i+3) if i+3 < 10
-      affine.if affine_set<(d0) : (d0 + 3 < 10)>(%iv) {
-        %next_iv = affine.apply affine_map<(d0) -> (d0 + 3)>(%iv)
-        %next_iv_i64 = arith.index_cast %next_iv : index to i64
-        kmrt.prefetch_key %next_iv_i64
-      }
-
       %iv_i64 = arith.index_cast %iv : index to i64
       %rk = kmrt.load_key %iv_i64 : !kmrt.rot_key
       %ct_rot = openfhe.rot %cc, %ct, %rk
-      kmrt.clear_key %rk
       // ... more operations ...
     }
+    ```
+
+    Keys that are cleared before being loaded are not prefetched:
+    ```mlir
+    // Before
+    affine.for %iv = 1 to 10 {
+      %iv_i64 = arith.index_cast %iv : index to i64
+      kmrt.clear_key %iv_i64
+      %rk = kmrt.load_key %iv_i64 : !kmrt.rot_key
+      %ct_rot = openfhe.rot %cc, %ct, %rk
+    }
+
+    // After: No prefetch loop created (key is cleared before load)
     ```
   }];
 
   let dependentDialects = [
     "mlir::heir::kmrt::KMRTDialect",
     "mlir::affine::AffineDialect",
-    "mlir::arith::ArithDialect"
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect",
   ];
 
   let options = [
     Option<"prefetchThreshold", "prefetch-threshold", "unsigned", /*default=*/"50",
            "Cumulative cost threshold for prefetch placement">,
+    Option<"skipInsertion", "skip-insertion", "bool", /*default=*/"false",
+           "Skip automatic prefetch insertion, only run verification (requires verify-prefetches=true)">,
     Option<"verifyPrefetches", "verify-prefetches", "bool", /*default=*/"false",
-           "Verify that every load_key has a corresponding prefetch_key using abstract interpretation">
+           "Verify that every load_key has a corresponding prefetch_key using abstract interpretation">,
+    Option<"runtimeDelegated", "runtime-delegated", "bool", /*default=*/"false",
+           "Collect all keys in execution order and delegate prefetching decisions to runtime">
   ];
 }
 

@@ -44,12 +44,11 @@ func.func @affine_loop_linear_transform(%cc: !cc, %ct: !ct_L5) -> !ct_L5 {
   %pt_0 = lwe.rlwe_encode %extracted_slice_0 {encoding = #inverse_canonical_encoding1, ring = #ring_f64_1} : tensor<4xf64> -> !pt
   %ct_init = openfhe.mul_plain %cc, %ct, %pt_0 : (!cc, !ct_L5, !pt) -> !ct_L5
 
-  // Before the loop, prefetch the first iteration(s) based on cost analysis
-  // Loop body cost: rot(15) + mul_plain(10) + add(1) ≈ 26
-  // With threshold=30, prefetch distance = 30/26 ≈ 1 iteration ahead
-  // So we prefetch only iteration 1 before the loop
+  // Before the loop, prefetch the first iteration's key
+  // New integrated prefetching: prefetch first iteration before loop
   // CHECK: %[[C1:.*]] = arith.constant 1
-  // CHECK-NEXT: kmrt.prefetch_key %[[C1]]
+  // CHECK: %[[C1_I64:.*]] = arith.index_cast %[[C1]]
+  // CHECK: kmrt.prefetch_key %[[C1_I64]]
 
   // CHECK: %[[RESULT:.*]] = affine.for %[[IV:.*]] = 1 to 8 iter_args(%[[ACC:.*]] = %{{.*}}) -> (!ct_L5) {
   %result = affine.for %iv = 1 to 8 iter_args(%acc = %ct_init) -> (!ct_L5) {

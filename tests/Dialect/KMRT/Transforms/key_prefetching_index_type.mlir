@@ -29,7 +29,8 @@
 func.func @test_index_type_load_key(%cc: !cc, %ct: !ct_L5) -> !ct_L5 {
   // Before the loop, prefetch the first iteration with proper type
   // CHECK: %[[C1:.*]] = arith.constant 1
-  // CHECK-NEXT: kmrt.prefetch_key %[[C1]]
+  // CHECK: %[[C1_I64:.*]] = arith.index_cast %[[C1]]
+  // CHECK: kmrt.prefetch_key %[[C1_I64]]
 
   // CHECK: %[[RESULT:.*]] = affine.for %[[IV:.*]] = 1 to 8 iter_args(%[[ACC:.*]] = %{{.*}}) -> (!ct_L5) {
   %result = affine.for %iv = 1 to 8 iter_args(%acc = %ct) -> (!ct_L5) {
