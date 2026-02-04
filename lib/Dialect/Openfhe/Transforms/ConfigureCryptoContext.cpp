@@ -125,7 +125,7 @@ void extractRotationIndicesFromLoadKey(kmrt::LoadKeyOp loadKeyOp,
     SmallVector<int64_t> upperBounds;
     SmallVector<int64_t> symbolValues;
 
-    // Process dimension operands (loop IVs)
+    // Process dimension operands (loop IVs or constants)
     for (unsigned i = 0; i < numDims; ++i) {
       Value operand = affineApplyOp.getMapOperands()[i];
       if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
@@ -204,8 +204,18 @@ void extractRotationIndicesFromLoadKey(kmrt::LoadKeyOp loadKeyOp,
         } else {
           return;  // Block arg not from affine.for
         }
+      } else if (auto constOp = operand.getDefiningOp<arith::ConstantOp>()) {
+        // Handle constant dimension operands
+        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+          int64_t val = intAttr.getInt();
+          // Treat constant as a single-value range [val, val+1)
+          lowerBounds.push_back(val);
+          upperBounds.push_back(val + 1);
+        } else {
+          return;  // Can't handle non-integer constant
+        }
       } else {
-        return;  // Dimension must be a loop IV
+        return;  // Can't handle this dimension operand type
       }
     }
 
@@ -350,6 +360,15 @@ SmallVector<int64_t> findAllRotIndices(func::FuncOp op) {
   // Find static rotation indices from RotOp operations
   op.walk([&](openfhe::RotOp rotOp) {
     auto rotKeyType = cast<kmrt::RotKeyType>(rotOp.getEvalKey().getType());
+    if (rotKeyType.isStatic()) {
+      distinctRotIndices.insert(rotKeyType.getStaticIndex());
+    }
+    return WalkResult::advance();
+  });
+
+  // Find static rotation indices from FastRotationOp operations
+  op.walk([&](openfhe::FastRotationOp fastRotOp) {
+    auto rotKeyType = cast<kmrt::RotKeyType>(fastRotOp.getEvalKey().getType());
     if (rotKeyType.isStatic()) {
       distinctRotIndices.insert(rotKeyType.getStaticIndex());
     }
@@ -566,6 +585,13 @@ struct ConfigureCryptoContext
     });
     op.walk([&](openfhe::RotInPlaceOp rotOp) {
       auto rotKeyType = cast<kmrt::RotKeyType>(rotOp.getEvalKey().getType());
+      if (rotKeyType.isStatic()) {
+        distinctRotIndices.insert(rotKeyType.getStaticIndex());
+      }
+      return WalkResult::advance();
+    });
+    op.walk([&](openfhe::FastRotationOp fastRotOp) {
+      auto rotKeyType = cast<kmrt::RotKeyType>(fastRotOp.getEvalKey().getType());
       if (rotKeyType.isStatic()) {
         distinctRotIndices.insert(rotKeyType.getStaticIndex());
       }

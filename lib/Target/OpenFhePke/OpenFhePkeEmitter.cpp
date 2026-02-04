@@ -34,6 +34,7 @@
 #include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"   // from @llvm-project
+#include "mlir/include/mlir/Dialect/MemRef/IR/MemRef.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/SCF/IR/SCF.h"        // from @llvm-project
 #include "mlir/include/mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/AsmState.h"
@@ -42,6 +43,7 @@
 #include "mlir/include/mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/BuiltinTypes.h"           // from @llvm-project
 #include "mlir/include/mlir/IR/Diagnostics.h"            // from @llvm-project
+#include "mlir/include/mlir/IR/IntegerSet.h"             // from @llvm-project
 #include "mlir/include/mlir/IR/Location.h"               // from @llvm-project
 #include "mlir/include/mlir/IR/TypeUtilities.h"          // from @llvm-project
 #include "mlir/include/mlir/IR/Types.h"                  // from @llvm-project
@@ -250,7 +252,7 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           .Case<func::FuncOp, func::CallOp, func::ReturnOp>(
               [&](auto op) { return printOperation(op); })
           // Affine ops
-          .Case<affine::AffineForOp, affine::AffineYieldOp,
+          .Case<affine::AffineForOp, affine::AffineIfOp, affine::AffineYieldOp,
                 affine::AffineApplyOp>(
               [&](auto op) { return printOperation(op); })
           // Arith ops
@@ -266,6 +268,9 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           .Case<tensor::ConcatOp, tensor::EmptyOp, tensor::InsertOp,
                 tensor::InsertSliceOp, tensor::ExtractOp,
                 tensor::ExtractSliceOp, tensor::SplatOp>(
+              [&](auto op) { return printOperation(op); })
+          // MemRef ops
+          .Case<memref::AllocaOp, memref::LoadOp, memref::StoreOp>(
               [&](auto op) { return printOperation(op); })
           // LWE ops
           .Case<lwe::RLWEDecodeOp, lwe::ReinterpretApplicationDataOp>(
@@ -380,11 +385,22 @@ LogicalResult OpenFhePkeEmitter::printOperation(func::FuncOp funcOp) {
     }
   }
 
+  // Check if this is a generate_crypto_context function to add params parameter
+  bool isGenerateCryptoContext =
+      funcOp.getName().contains("generate_crypto_context");
+
   if (funcOp.isDeclaration()) {
     // function declaration
     os << commaSeparatedTypes(funcOp.getArgumentTypes(), [&](Type type) {
       return convertType(type, funcOp->getLoc()).value();
     });
+    // Add CCParamsT parameter for generate_crypto_context functions
+    if (isGenerateCryptoContext) {
+      if (funcOp.getNumArguments() > 0) {
+        os << ", ";
+      }
+      os << "CCParamsT";
+    }
     // debug attribute map for debug call
     if (isDebugPort(funcOp.getName())) {
       os << ", const std::map<std::string, std::string>&";
@@ -394,6 +410,23 @@ LogicalResult OpenFhePkeEmitter::printOperation(func::FuncOp funcOp) {
       return convertType(value.getType(), funcOp->getLoc()).value() + " " +
              variableNames->getNameForValue(value);
     });
+    // Add CCParamsT parameter for generate_crypto_context functions
+    if (isGenerateCryptoContext) {
+      if (funcOp.getNumArguments() > 0) {
+        os << ", ";
+      }
+      // Find the GenParamsOp to get the params variable name
+      std::string paramsName = "params";
+      for (Block &block : funcOp.getBlocks()) {
+        for (Operation &op : block.getOperations()) {
+          if (auto genParams = dyn_cast<GenParamsOp>(&op)) {
+            paramsName = variableNames->getNameForValue(genParams.getResult());
+            break;
+          }
+        }
+      }
+      os << "CCParamsT " << paramsName;
+    }
   }
   os.unindent();
   os << ")";
@@ -542,6 +575,228 @@ LogicalResult OpenFhePkeEmitter::printOperation(affine::AffineForOp op) {
   return success();
 }
 
+LogicalResult OpenFhePkeEmitter::printOperation(affine::AffineIfOp op) {
+  // Handle affine.if similar to scf.if but with affine condition
+  bool hasElse = !op.getElseRegion().empty();
+
+  // Track assignments needed in else block for nested results
+  // Stores (result_index, outer_name)
+  SmallVector<std::pair<size_t, std::string>> elseAssignments;
+
+  for (auto i = 0; i < op.getNumResults(); ++i) {
+    Value result = op.getResults()[i];
+    Value thenYieldedValue =
+        op.getThenRegion().front().getTerminator()->getOperand(i);
+    Value elseYieldedValue;
+
+    if (hasElse) {
+      elseYieldedValue =
+          op.getElseRegion().front().getTerminator()->getOperand(i);
+    }
+
+    // Map the yielded value names to the result names if the yielded value is a
+    // tensor.
+    if (isa<ShapedType>(result.getType())) {
+      variableNames->mapValueNameToValue(thenYieldedValue, result);
+      if (hasElse) {
+        variableNames->mapValueNameToValue(elseYieldedValue, result);
+        mutableValues.insert(elseYieldedValue);
+      }
+      mutableValues.insert(thenYieldedValue);
+    } else {
+      // Check if this is a nested affine.if that needs a suffix
+      auto nestingLevelAttr = op->getAttrOfType<IntegerAttr>("nesting_level");
+      std::string resultName;
+
+      if (nestingLevelAttr) {
+        // For nested results, generate a unique name to avoid shadowing
+        // Don't use the pre-assigned name as it may conflict with values in
+        // other regions
+        int64_t nestingLevel = nestingLevelAttr.getInt();
+        int uniqueId = variableNames->getIntForValue(result);
+
+        // Get the base name from the result type
+        std::string baseName = "rk";  // Default for rotation keys
+        if (auto rotKeyType =
+                dyn_cast<heir::kmrt::RotKeyType>(result.getType())) {
+          baseName = "rk";
+        }
+
+        resultName = baseName + std::to_string(uniqueId) + "_n" +
+                     std::to_string(nestingLevel);
+      } else {
+        // Use the pre-assigned name for non-nested results
+        resultName = variableNames->getNameForValue(result);
+      }
+
+      if (failed(emitType(result.getType(), op.getLoc(),
+                          /*constant=*/false))) {
+        return emitError(op.getLoc(),
+                         llvm::formatv("Failed to emit type for {}", result));
+      }
+      os << " " << resultName << ";\n";
+      mutableValues.insert(result);
+
+      // IMPORTANT: Override the variable name mapping for nested results
+      // so that all operations inside use the unique nested name
+      if (nestingLevelAttr) {
+        variableNames->overrideNameForValue(result, resultName);
+      }
+
+      // Map the yielded value names to use the (possibly suffixed) result name
+      variableNames->mapValueNameToValue(thenYieldedValue, result);
+      mutableValues.insert(thenYieldedValue);
+      if (hasElse) {
+        // Check if the else-yielded value is from a nested affine.if
+        bool isNestedYield = false;
+        if (auto nestedIfOp =
+                elseYieldedValue.getDefiningOp<affine::AffineIfOp>()) {
+          if (nestedIfOp->getAttrOfType<IntegerAttr>("nesting_level")) {
+            // The else branch yields a nested result - need assignment
+            // Don't map the name yet - let the nested if declare its own
+            // suffixed variable
+            isNestedYield = true;
+            std::string outerName = resultName;  // Use the declared name (with
+                                                 // suffix if applicable)
+            // The nested name will be generated when that affine.if is
+            // processed We'll add the assignment after the else block
+            elseAssignments.push_back({i, outerName});
+          }
+        }
+
+        // Only map if it's not a nested yield
+        if (!isNestedYield) {
+          variableNames->mapValueNameToValue(elseYieldedValue, result);
+        }
+        mutableValues.insert(elseYieldedValue);
+      }
+    }
+  }
+
+  // Emit the condition expression
+  // For affine.if, we need to evaluate the IntegerSet condition
+  auto integerSet = op.getIntegerSet();
+  SmallVector<Value> operands(op.getOperands().begin(), op.getOperands().end());
+
+  // Build the condition string from the IntegerSet
+  // An IntegerSet can have multiple constraints that are combined with AND
+  std::string conditionStr;
+  llvm::raw_string_ostream condStream(conditionStr);
+
+  // Helper to emit an affine expression as C++ code to a given stream
+  std::function<LogicalResult(AffineExpr, llvm::raw_ostream &)> emitAffineExpr =
+      [&](AffineExpr e, llvm::raw_ostream &outStream) -> LogicalResult {
+    if (auto constExpr = dyn_cast<AffineConstantExpr>(e)) {
+      outStream << constExpr.getValue();
+      return success();
+    } else if (auto dimExpr = dyn_cast<AffineDimExpr>(e)) {
+      unsigned pos = dimExpr.getPosition();
+      if (pos >= integerSet.getNumDims()) {
+        return emitError(op.getLoc(), "Dimension position out of bounds");
+      }
+      if (pos >= operands.size()) {
+        return emitError(op.getLoc(), "Not enough operands for dimension");
+      }
+      outStream << variableNames->getNameForValue(operands[pos]);
+      return success();
+    } else if (auto symExpr = dyn_cast<AffineSymbolExpr>(e)) {
+      unsigned pos = symExpr.getPosition() + integerSet.getNumDims();
+      if (pos >= operands.size()) {
+        return emitError(op.getLoc(), "Symbol position out of bounds");
+      }
+      outStream << variableNames->getNameForValue(operands[pos]);
+      return success();
+    } else if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(e)) {
+      outStream << "(";
+      if (failed(emitAffineExpr(binExpr.getLHS(), outStream))) return failure();
+
+      switch (binExpr.getKind()) {
+        case AffineExprKind::Add:
+          outStream << " + ";
+          break;
+        case AffineExprKind::Mul:
+          outStream << " * ";
+          break;
+        case AffineExprKind::FloorDiv:
+          outStream << " / ";
+          break;
+        case AffineExprKind::CeilDiv:
+          outStream << " / ";
+          break;
+        case AffineExprKind::Mod:
+          outStream << " % ";
+          break;
+        default:
+          return emitError(op.getLoc(), "Unsupported affine binary operation");
+      }
+
+      if (failed(emitAffineExpr(binExpr.getRHS(), outStream))) return failure();
+      outStream << ")";
+      return success();
+    }
+
+    return emitError(op.getLoc(), "Unsupported affine expression type");
+  };
+
+  for (unsigned i = 0; i < integerSet.getNumConstraints(); ++i) {
+    if (i > 0) {
+      condStream << " && ";
+    }
+
+    auto expr = integerSet.getConstraint(i);
+    bool isEq = integerSet.isEq(i);
+
+    condStream << "(";
+    if (failed(emitAffineExpr(expr, condStream))) {
+      return emitError(op.getLoc(), "Failed to emit affine constraint");
+    }
+
+    if (isEq) {
+      condStream << " == 0";
+    } else {
+      condStream << " >= 0";
+    }
+    condStream << ")";
+  }
+  condStream.flush();
+
+  os << llvm::formatv("if ({0}) {{\n", conditionStr);
+  os.indent();
+  for (Operation &innerOp : op.getThenRegion().front()) {
+    if (failed(translate(innerOp))) {
+      return innerOp.emitOpError()
+             << "Failed to translate affine.if then block";
+    }
+  }
+  os.unindent();
+  os << "}";
+
+  if (hasElse) {
+    os << llvm::formatv(" else {{\n");
+    os.indent();
+    for (Operation &innerOp : op.getElseRegion().front()) {
+      if (failed(translate(innerOp))) {
+        return innerOp.emitOpError()
+               << "Failed to translate affine.if else block";
+      }
+    }
+    // Emit assignments for nested results
+    for (auto &[resultIndex, outerName] : elseAssignments) {
+      // Get the actual nested variable name (now that it's been declared)
+      Value elseYieldedValue =
+          op.getElseRegion().front().getTerminator()->getOperand(resultIndex);
+      std::string actualNestedName =
+          variableNames->getNameForValue(elseYieldedValue);
+      os << outerName << " = " << actualNestedName << ";\n";
+    }
+    os.unindent();
+    os << "}";
+  }
+
+  os << "\n";
+  return success();
+}
+
 LogicalResult OpenFhePkeEmitter::printOperation(affine::AffineYieldOp op) {
   // Assume all yielded loop values have already been assigned.
   return success();
@@ -638,6 +893,9 @@ LogicalResult OpenFhePkeEmitter::printOperation(scf::IfOp op) {
   // }
   bool hasElse = !op.getElseRegion().empty();
 
+  // Track assignments needed in else block for nested results
+  SmallVector<std::pair<size_t, std::string>> elseAssignments;
+
   for (auto i = 0; i < op.getNumResults(); ++i) {
     Value result = op.getResults()[i];
     Value thenYieldedValue = op.thenYield().getResults()[i];
@@ -657,19 +915,62 @@ LogicalResult OpenFhePkeEmitter::printOperation(scf::IfOp op) {
       }
       mutableValues.insert(thenYieldedValue);
     } else {
+      // Check if THIS scf.if is nested (its result is yielded by another
+      // scf.if's else)
+      bool isThisNested = false;
+      for (auto user : result.getUsers()) {
+        if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
+          // Check if this yield is in an else region
+          if (auto parentIf = yieldOp->getParentOfType<scf::IfOp>()) {
+            if (yieldOp->getParentRegion() == &parentIf.getElseRegion()) {
+              isThisNested = true;
+              break;
+            }
+          }
+        }
+      }
+
+      std::string resultName;
+      if (isThisNested) {
+        // This scf.if is nested - use unique name to avoid shadowing
+        int uniqueId = variableNames->getIntForValue(result);
+        std::string baseName = "rk";  // Default for rotation keys
+        resultName = baseName + std::to_string(uniqueId) + "_nested";
+      } else {
+        // Use the pre-assigned name for non-nested results
+        resultName = variableNames->getNameForValue(result);
+      }
+
       if (failed(emitType(result.getType(), op.getLoc(),
                           /*constant=*/false))) {
         return emitError(op.getLoc(),
                          llvm::formatv("Failed to emit type for {}", result));
       }
-      os << " " << variableNames->getNameForValue(result) << ";\n";
+      os << " " << resultName << ";\n";
       mutableValues.insert(result);
+
+      // IMPORTANT: Override the variable name mapping for nested results
+      // so that all operations inside use the unique nested name
+      if (isThisNested) {
+        variableNames->overrideNameForValue(result, resultName);
+      }
+
       // Map the yielded value names to the result name to avoid creating
       // intermediate variables inside the if/else blocks
       variableNames->mapValueNameToValue(thenYieldedValue, result);
       mutableValues.insert(thenYieldedValue);
       if (hasElse) {
-        variableNames->mapValueNameToValue(elseYieldedValue, result);
+        // Check if the else-yielded value is from a nested scf.if
+        bool isNestedYield = false;
+        if (auto nestedIfOp = elseYieldedValue.getDefiningOp<scf::IfOp>()) {
+          // Don't map the name - let the nested if use its own unique name
+          isNestedYield = true;
+          elseAssignments.push_back({i, resultName});
+        }
+
+        if (!isNestedYield) {
+          variableNames->mapValueNameToValue(elseYieldedValue, result);
+        }
         mutableValues.insert(elseYieldedValue);
       }
     }
@@ -689,10 +990,16 @@ LogicalResult OpenFhePkeEmitter::printOperation(scf::IfOp op) {
   if (hasElse) {
     os << llvm::formatv(" else {{\n");
     os.indent();
-    for (Operation &op : *op.elseBlock()) {
-      if (failed(translate(op))) {
-        return op.emitOpError() << "Failed to translate for if else block";
+    for (Operation &innerOp : *op.elseBlock()) {
+      if (failed(translate(innerOp))) {
+        return innerOp.emitOpError() << "Failed to translate for if else block";
       }
+    }
+    // Emit assignments for nested results
+    for (auto &[resultIndex, outerName] : elseAssignments) {
+      Value elseYieldedValue = op.elseYield().getResults()[resultIndex];
+      std::string nestedName = variableNames->getNameForValue(elseYieldedValue);
+      os << outerName << " = " << nestedName << ";\n";
     }
     os.unindent();
     os << "}";
@@ -1132,11 +1439,39 @@ LogicalResult OpenFhePkeEmitter::printOperation(FastRotationPrecomputeOp op) {
 LogicalResult OpenFhePkeEmitter::printOperation(FastRotationOp op) {
   emitAutoAssignPrefix(op.getResult());
   os << variableNames->getNameForValue(op.getCryptoContext()) << "->"
-     << "EvalFastRotation(" << variableNames->getNameForValue(op.getInput())
-     << ", " << op.getIndex().getZExtValue() << ", "
-     << op.getCyclotomicOrder().getZExtValue() << ", "
+     << "EvalFastRotation("
+     << variableNames->getNameForValue(op.getCiphertext()) << ", ";
+
+  // Get rotation index from evalKey (similar to RotOp)
+  Value evalKey = op.getEvalKey();
+  if (auto loadOp = evalKey.getDefiningOp<kmrt::LoadKeyOp>()) {
+    os << variableNames->getNameForValue(loadOp.getIndex());
+  } else if (auto useOp = evalKey.getDefiningOp<kmrt::UseKeyOp>()) {
+    std::string varName = variableNames->getNameForValue(useOp.getRotKey());
+    if (varName.empty() ||
+        (varName.find_first_not_of("0123456789") == std::string::npos)) {
+      varName = "rk" + std::to_string(
+                           variableNames->getIntForValue(useOp.getRotKey()));
+    }
+    os << varName;
+  } else if (auto assumeOp = evalKey.getDefiningOp<kmrt::AssumeLoadedOp>()) {
+    os << variableNames->getNameForValue(assumeOp.getIndex());
+  } else {
+    std::string varName = variableNames->getNameForValue(evalKey);
+    if (varName.empty() ||
+        (varName.find_first_not_of("0123456789") == std::string::npos)) {
+      varName = "rk" + std::to_string(variableNames->getIntForValue(evalKey));
+    }
+    os << varName;
+  }
+
+  os << ", " << variableNames->getNameForValue(op.getCryptoContext())
+     << "->GetRingDimension() * 2" << ", "
      << variableNames->getNameForValue(op.getPrecomputedDigitDecomp())
      << ");\n";
+
+  emitLogRotWithSSA(op.getCiphertext());
+  emitLogCTWithSSA(op.getResult());
   return success();
 }
 
@@ -1673,6 +2008,64 @@ LogicalResult OpenFhePkeEmitter::printOperation(tensor::SplatOp op) {
   return success();
 }
 
+LogicalResult OpenFhePkeEmitter::printOperation(memref::AllocaOp op) {
+  // std::vector<ElemType> array_name(size);
+  auto memrefType = op.getType();
+  if (memrefType.getRank() != 1) {
+    return emitError(op->getLoc(), "only 1-D memrefs are supported");
+  }
+
+  // Get the element type
+  auto elementType = memrefType.getElementType();
+  auto convertedElemType = convertType(elementType, op.getLoc());
+  if (failed(convertedElemType)) {
+    return failure();
+  }
+
+  // Emit: std::vector<ElemType> name(size);
+  os << "std::vector<" << convertedElemType.value() << "> "
+     << variableNames->getNameForValue(op.getResult()) << "(";
+
+  // Get the size (must be static)
+  auto shape = memrefType.getShape();
+  if (shape[0] == ShapedType::kDynamic) {
+    return emitError(op->getLoc(), "dynamic memref sizes not supported");
+  }
+  os << shape[0] << ");\n";
+
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(memref::LoadOp op) {
+  // const auto& result = array[index];
+  emitAutoAssignPrefix(op.getResult());
+  os << variableNames->getNameForValue(op.getMemRef()) << "[";
+
+  // Handle indices
+  auto indices = op.getIndices();
+  if (indices.size() != 1) {
+    return emitError(op->getLoc(), "only 1-D memref loads are supported");
+  }
+
+  os << variableNames->getNameForValue(indices[0]) << "];\n";
+  return success();
+}
+
+LogicalResult OpenFhePkeEmitter::printOperation(memref::StoreOp op) {
+  // array[index] = value;
+  os << variableNames->getNameForValue(op.getMemRef()) << "[";
+
+  // Handle indices
+  auto indices = op.getIndices();
+  if (indices.size() != 1) {
+    return emitError(op->getLoc(), "only 1-D memref stores are supported");
+  }
+
+  os << variableNames->getNameForValue(indices[0])
+     << "] = " << variableNames->getNameForValue(op.getValue()) << ";\n";
+  return success();
+}
+
 LogicalResult OpenFhePkeEmitter::printOperation(
     lwe::ReinterpretApplicationDataOp op) {
   emitAutoAssignPrefix(op.getResult());
@@ -1713,39 +2106,12 @@ LogicalResult OpenFhePkeEmitter::printOperation(
 LogicalResult OpenFhePkeEmitter::printOperation(
     openfhe::MakeCKKSPackedPlaintextOp op) {
   std::string inputVarName = variableNames->getNameForValue(op.getValue());
-  std::string filledPrefix =
-      variableNames->getNameForValue(op.getResult()) + "_filled";
-  std::string inputVarFilledName = filledPrefix;
-  std::string inputVarFilledLengthName = filledPrefix + "_n";
-
   FailureOr<Value> resultCC = getContextualCryptoContext(op.getOperation());
   if (failed(resultCC)) return resultCC;
   std::string cc = variableNames->getNameForValue(resultCC.value());
 
-  // Use immediately-invoked lambda with proper captures
-  emitAutoAssignPrefix(op.getResult());
-  os << "[&" << cc << ", &" << inputVarName
-     << "]() {\n";  // Capture by reference
-
-  // cyclic repetition to mitigate openfhe zero-padding (#645)
-  os << "  auto " << inputVarFilledLengthName << " = " << cc
-     << "->GetCryptoParameters()->GetElementParams()->GetRingDimension() / "
-        "2;\n";
-  os << "  auto " << inputVarFilledName << " = " << inputVarName << ";\n";
-  os << "  " << inputVarFilledName << ".clear();\n";
-  os << "  " << inputVarFilledName << ".reserve(" << inputVarFilledLengthName
-     << ");\n";
-  os << "  for (auto i = 0; i < " << inputVarFilledLengthName << "; ++i) {\n";
-  os << "    " << inputVarFilledName << ".push_back(" << inputVarName << "[i % "
-     << inputVarName << ".size()]);\n";
-  os << "  }\n";
-
-  // Return the plaintext from the lambda
-  os << "  return " << cc << "->MakeCKKSPackedPlaintext(" << inputVarFilledName
-     << ");\n";
-
-  os << "}();\n";  // End lambda and call it immediately
-
+  os << "auto " << variableNames->getNameForValue(op.getResult()) << " = ";
+  os << cc << "->MakeCKKSPackedPlaintext(" << inputVarName << ");\n";
   return success();
 }
 
@@ -1851,7 +2217,20 @@ LogicalResult OpenFhePkeEmitter::printOperation(GenParamsOp op) {
   int64_t evalAddCount = op.getEvalAddCountAttr().getValue().getSExtValue();
   int64_t keySwitchCount = op.getKeySwitchCountAttr().getValue().getSExtValue();
 
-  os << "CCParamsT " << paramsName << ";\n";
+  // Check if this GenParamsOp is in a generate_crypto_context function
+  // If so, skip the declaration since it's now a function parameter
+  bool isInGenerateCryptoContext = false;
+  if (auto *block = op->getBlock()) {
+    if (auto funcOp = dyn_cast_or_null<func::FuncOp>(block->getParentOp())) {
+      if (funcOp.getName().contains("generate_crypto_context")) {
+        isInGenerateCryptoContext = true;
+      }
+    }
+  }
+
+  if (!isInGenerateCryptoContext) {
+    os << "CCParamsT " << paramsName << ";\n";
+  }
   // Essential parameters
   os << paramsName << ".SetMultiplicativeDepth(" << mulDepth << ");\n";
   if (plainMod != 0) {

@@ -92,6 +92,15 @@ LogicalResult OpenFhePkeHeaderEmitter::printOperation(func::FuncOp funcOp) {
     auto res = convertType(value.getType(), funcOp->getLoc());
     return res.value() + " " + variableNames->getNameForValue(value);
   });
+
+  // Add CCParamsT parameter for generate_crypto_context functions
+  if (funcOp.getName().contains("generate_crypto_context")) {
+    if (funcOp.getNumArguments() > 0) {
+      os << ", ";
+    }
+    os << "CCParamsT params";
+  }
+
   os << ");\n";
 
   return success();

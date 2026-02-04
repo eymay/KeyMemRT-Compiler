@@ -39,6 +39,12 @@ class SelectVariableNames {
     variableToInteger[fromValue] = variableToInteger[toValue];
   }
 
+  // Override the name for a value (for special cases like nested scf.if)
+  void overrideNameForValue(Value value, std::string newName) {
+    assert(variableNames.contains(value));
+    variableNames[value] = newName;
+  }
+
   bool contains(Value value) const { return variableNames.contains(value); }
 
  private:

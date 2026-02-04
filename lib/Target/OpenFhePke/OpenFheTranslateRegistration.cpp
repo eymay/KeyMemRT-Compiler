@@ -20,6 +20,7 @@
 #include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"   // from @llvm-project
+#include "mlir/include/mlir/Dialect/MemRef/IR/MemRef.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/SCF/IR/SCF.h"        // from @llvm-project
 #include "mlir/include/mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/include/mlir/IR/DialectRegistry.h"        // from @llvm-project
@@ -83,12 +84,13 @@ void registerToOpenFhePkeTranslation() {
                                      options->weightsFile);
       },
       [](DialectRegistry &registry) {
-        registry.insert<
-            arith::ArithDialect, func::FuncDialect, openfhe::OpenfheDialect,
-            lwe::LWEDialect, kmrt::KMRTDialect, tensor_ext::TensorExtDialect,
-            ::mlir::heir::polynomial::PolynomialDialect, tensor::TensorDialect,
-            mod_arith::ModArithDialect, rns::RNSDialect, affine::AffineDialect,
-            scf::SCFDialect>();
+        registry
+            .insert<arith::ArithDialect, func::FuncDialect,
+                    openfhe::OpenfheDialect, lwe::LWEDialect, kmrt::KMRTDialect,
+                    memref::MemRefDialect, tensor_ext::TensorExtDialect,
+                    ::mlir::heir::polynomial::PolynomialDialect,
+                    tensor::TensorDialect, mod_arith::ModArithDialect,
+                    rns::RNSDialect, affine::AffineDialect, scf::SCFDialect>();
         rns::registerExternalRNSTypeInterfaces(registry);
       });
 }
@@ -105,8 +107,9 @@ void registerToOpenFhePkeHeaderTranslation() {
       [](DialectRegistry &registry) {
         registry.insert<arith::ArithDialect, affine::AffineDialect,
                         func::FuncDialect, tensor::TensorDialect,
-                        tensor_ext::TensorExtDialect, openfhe::OpenfheDialect,
-                        lwe::LWEDialect, kmrt::KMRTDialect, rns::RNSDialect,
+                        memref::MemRefDialect, tensor_ext::TensorExtDialect,
+                        openfhe::OpenfheDialect, lwe::LWEDialect,
+                        kmrt::KMRTDialect, rns::RNSDialect,
                         ::mlir::heir::polynomial::PolynomialDialect,
                         mod_arith::ModArithDialect, scf::SCFDialect>();
         rns::registerExternalRNSTypeInterfaces(registry);

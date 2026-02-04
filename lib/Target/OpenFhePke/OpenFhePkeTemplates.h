@@ -22,6 +22,8 @@ constexpr std::string_view kEmbeddedOpenfheImport = R"cpp(
 
 // clang-format off
 constexpr std::string_view kModulePreludeTemplate = R"cpp(
+#include "generic_header.h"
+
 using namespace lbcrypto;
 using CiphertextT = ConstCiphertext<DCRTPoly>;
 using MutableCiphertextT = Ciphertext<DCRTPoly>;
@@ -46,6 +48,7 @@ constexpr std::string_view kWeightsPreludeTemplate = R"cpp(
 #include "include/cereal/archives/portable_binary.hpp" // from @cereal
 #include "include/cereal/cereal.hpp" // from @cereal
 
+namespace {
 struct Weights {
   std::map<std::string, std::vector<float>> floats;
   std::map<std::string, std::vector<double>> doubles;
@@ -61,13 +64,14 @@ struct Weights {
   }
 };
 
-Weights GetWeightModule(const std::string& filename) {
+inline Weights GetWeightModule(const std::string& filename) {
   Weights obj;
   std::ifstream file(filename, std::ios::in | std::ios::binary);
   cereal::PortableBinaryInputArchive archive(file);
   archive(obj);
   file.close();
   return obj;
+}
 }
 )cpp";
 // clang-format on
