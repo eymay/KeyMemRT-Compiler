@@ -6,7 +6,6 @@
 #include "lib/Dialect/Arith/Conversions/ArithToCGGI/ArithToCGGI.h"
 #include "lib/Dialect/Arith/Conversions/ArithToCGGIQuart/ArithToCGGIQuart.h"
 #include "lib/Dialect/Arith/Conversions/ArithToModArith/ArithToModArith.h"
-#include "lib/Dialect/BGV/Conversions/BGVToLWE/BGVToLWE.h"
 #include "lib/Dialect/BGV/IR/BGVDialect.h"
 #include "lib/Dialect/CGGI/Conversions/CGGIToJaxite/CGGIToJaxite.h"
 #include "lib/Dialect/CGGI/Conversions/CGGIToTfheRust/CGGIToTfheRust.h"
@@ -44,7 +43,6 @@
 #include "lib/Dialect/Random/IR/RandomDialect.h"
 #include "lib/Dialect/Secret/Conversions/SecretToBGV/SecretToBGV.h"
 #include "lib/Dialect/Secret/Conversions/SecretToCGGI/SecretToCGGI.h"
-#include "lib/Dialect/Secret/Conversions/SecretToCKKS/SecretToCKKS.h"
 #include "lib/Dialect/Secret/IR/SecretDialect.h"
 #include "lib/Dialect/Secret/Transforms/BufferizableOpInterfaceImpl.h"
 #include "lib/Dialect/Secret/Transforms/Passes.h"
@@ -345,7 +343,6 @@ int main(int argc, char **argv) {
   mlir::heir::arith::registerArithToCGGIPasses();
   mlir::heir::arith::registerArithToCGGIQuartPasses();
   mod_arith::registerConvertToMacPass();
-  bgv::registerBGVToLWEPasses();
   ckks::registerCKKSToLWEPasses();
   registerSecretToCGGIPasses();
   lwe::registerLWEToLattigoPasses();
@@ -359,7 +356,6 @@ int main(int argc, char **argv) {
   registerCGGIToTfheRustBoolPasses();
   // This comement registers internal passes
   registerSecretToBGVPasses();
-  registerSecretToCKKSPasses();
   ::mlir::heir::tosa::registerTosaToSecretArithPasses();
 
   // Interfaces in HEIR

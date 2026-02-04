@@ -5,8 +5,6 @@
 #include <vector>
 
 #include "lib/Dialect/Arith/Conversions/ArithToModArith/ArithToModArith.h"
-#include "lib/Dialect/BGV/Conversions/BGVToLWE/BGVToLWE.h"
-#include "lib/Dialect/CKKS/Conversions/CKKSToLWE/CKKSToLWE.h"
 #include "lib/Dialect/LWE/Conversions/LWEToLattigo/LWEToLattigo.h"
 #include "lib/Dialect/LWE/Conversions/LWEToOpenfhe/LWEToOpenfhe.h"
 #include "lib/Dialect/LWE/Transforms/AddClientInterface.h"
@@ -16,8 +14,6 @@
 #include "lib/Dialect/LinAlg/Conversions/LinalgToTensorExt/LinalgToTensorExt.h"
 #include "lib/Dialect/Openfhe/Transforms/ConfigureCryptoContext.h"
 #include "lib/Dialect/Openfhe/Transforms/CountAddAndKeySwitch.h"
-#include "lib/Dialect/Secret/Conversions/SecretToBGV/SecretToBGV.h"
-#include "lib/Dialect/Secret/Conversions/SecretToCKKS/SecretToCKKS.h"
 #include "lib/Dialect/Secret/IR/SecretDialect.h"
 #include "lib/Dialect/Secret/Transforms/AddDebugPort.h"
 #include "lib/Dialect/Secret/Transforms/DistributeGeneric.h"
@@ -303,19 +299,6 @@ void mlirToRLWEPipeline(OpPassManager &pm,
 
   // Lower to RLWE Scheme
   switch (scheme) {
-    case RLWEScheme::ckksScheme: {
-      auto secretToCKKSOpts = SecretToCKKSOptions{};
-      secretToCKKSOpts.polyModDegree = options.ciphertextDegree;
-      pm.addPass(createSecretToCKKS(secretToCKKSOpts));
-      break;
-    }
-    case RLWEScheme::bgvScheme:
-    case RLWEScheme::bfvScheme: {
-      auto secretToBGVOpts = SecretToBGVOptions{};
-      secretToBGVOpts.polyModDegree = options.ciphertextDegree;
-      pm.addPass(createSecretToBGV(secretToBGVOpts));
-      break;
-    }
     default:
       llvm::errs() << "Unsupported RLWE scheme: " << scheme;
       exit(EXIT_FAILURE);
@@ -337,8 +320,6 @@ RLWEPipelineBuilder mlirToRLWEPipelineBuilder(const RLWEScheme scheme) {
 BackendPipelineBuilder toOpenFhePipelineBuilder() {
   return [=](OpPassManager &pm, const BackendOptions &options) {
     // Convert the common trivial subset of CKKS/BGV to LWE
-    pm.addPass(bgv::createBGVToLWE());
-    pm.addPass(ckks::createCKKSToLWE());
 
     // insert debug handler calls
     if (options.debug) {
@@ -372,8 +353,6 @@ BackendPipelineBuilder toLattigoPipelineBuilder() {
   return [=](OpPassManager &pm, const BackendOptions &options) {
     // Convert to (common trivial subset of) LWE
     // TODO (#1193): Replace `--bgv-to-lwe` with `--bgv-common-to-lwe`
-    pm.addPass(bgv::createBGVToLWE());
-    pm.addPass(ckks::createCKKSToLWE());
 
     // insert debug handler calls
     if (options.debug) {

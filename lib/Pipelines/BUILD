@@ -10,7 +10,6 @@ cc_library(
     srcs = ["PipelineRegistration.cpp"],
     hdrs = ["PipelineRegistration.h"],
     deps = [
-        "@heir//lib/Dialect/BGV/Conversions/BGVToLWE",
         "@heir//lib/Dialect/LWE/Conversions/LWEToPolynomial",
         "@heir//lib/Dialect/LinAlg/Conversions/LinalgToTensorExt",
         "@heir//lib/Dialect/ModArith/Conversions/ModArithToArith",
@@ -94,8 +93,6 @@ cc_library(
     deps = [
         ":PipelineRegistration",
         "@heir//lib/Dialect/Arith/Conversions/ArithToModArith",
-        "@heir//lib/Dialect/BGV/Conversions/BGVToLWE",
-        "@heir//lib/Dialect/CKKS/Conversions/CKKSToLWE",
         "@heir//lib/Dialect/LWE/Conversions/LWEToLattigo",
         "@heir//lib/Dialect/LWE/Conversions/LWEToOpenfhe",
         "@heir//lib/Dialect/LWE/Conversions/LWEToPolynomial",
@@ -106,9 +103,7 @@ cc_library(
         "@heir//lib/Dialect/LinAlg/Conversions/LinalgToTensorExt",
         "@heir//lib/Dialect/Openfhe/Transforms:ConfigureCryptoContext",
         "@heir//lib/Dialect/Openfhe/Transforms:CountAddAndKeySwitch",
-        "@heir//lib/Dialect/Secret/Conversions/SecretToBGV",
         "@heir//lib/Dialect/Secret/Conversions/SecretToCGGI",
-        "@heir//lib/Dialect/Secret/Conversions/SecretToCKKS",
         "@heir//lib/Dialect/Secret/IR:Dialect",
         "@heir//lib/Dialect/Secret/Transforms:AddDebugPort",
         "@heir//lib/Dialect/Secret/Transforms:DistributeGeneric",

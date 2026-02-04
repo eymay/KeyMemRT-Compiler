@@ -25,8 +25,8 @@ cc_library(
     # alwayslink = 1,
 )
 
-# add_heir_transforms(
-#     header_filename = "BGVToLWE.h.inc",
-#     pass_name = "BGVToLWE",
-#     td_file = "BGVToLWE.td",
-# )
+add_heir_transforms(
+    header_filename = "BGVToLWE.h.inc",
+    pass_name = "BGVToLWE",
+    td_file = "BGVToLWE.td",
+)
