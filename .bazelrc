@@ -4,7 +4,7 @@ common --copt=-fdiagnostics-color=always
 common --test_output=errors
 # compilation_mode options below are `dbg` (debug symbols) `fastbuild`
 # (build as quickly as possible), and `opt` (turn on all optimizations)
-common -c dbg
+common -c opt
 common --enable_bzlmod
 # required for hybrid bzlmod+workspace builds
 common --enable_workspace
@@ -18,7 +18,7 @@ build --host_action_env=CC=clang
 build --host_action_env=CXX=clang++
 
 # linux-specific options
-build:linux --linkopt="-fuse-ld=lld"
+build:linux --linkopt="-fuse-ld=mold"
 
 # macos specific options
 build:macos --apple_platform_type=macos
