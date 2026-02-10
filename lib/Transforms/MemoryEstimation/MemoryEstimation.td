@@ -48,9 +48,6 @@ def MemoryEstimation : Pass<"memory-estimation"> {
     Option<"dnum", "dnum", "unsigned",
            /*default=*/"2", 
            "Dnum parameter (typically 2 for RLWE)">,
-    Option<"multDepth", "mult-depth", "unsigned",
-           /*default=*/"10", 
-           "Multiplicative depth for key tower calculations">,
     Option<"fixedPTowers", "fixed-p-towers", "unsigned",
            /*default=*/"4", 
            "Fixed number of P towers for keys">,
@@ -59,7 +56,10 @@ def MemoryEstimation : Pass<"memory-estimation"> {
            "Include memory hotspot identification">,
     Option<"memoryThresholdMB", "memory-threshold-mb", "unsigned",
            /*default=*/"1024", 
-           "Memory threshold in MB for hotspot identification">
+           "Memory threshold in MB for hotspot identification">,
+    Option<"opScale", "op-scale", "bool",
+           /*default=*/"true", 
+           "Output format: 'text', 'matrix', or 'json'">,
   ];
   
   let dependentDialects = ["mlir::heir::openfhe::OpenfheDialect"];
