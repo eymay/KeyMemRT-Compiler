@@ -653,10 +653,10 @@ struct BootstrapRotationAnalysis
           loc, builder.getI64IntegerAttr(rotIndex));
 
       // Create load_key operation with static rotation index
-      auto rotKeyType = kmrt::RotKeyType::get(
-          builder.getContext(), std::optional<int64_t>(rotIndex));
-      auto loadOp = builder.create<kmrt::LoadKeyOp>(
-          loc, rotKeyType, indexConstant.getResult());
+      auto rotKeyType = kmrt::RotKeyType::get(builder.getContext(),
+                                              std::optional<int64_t>(rotIndex));
+      auto loadOp = builder.create<kmrt::LoadKeyOp>(loc, rotKeyType,
+                                                    indexConstant.getResult());
 
       // For pre-analyzed configurations, set the correct level
       if (hasPreAnalyzedConfig && BootstrapKeyConfigRegistry::hasLevel(

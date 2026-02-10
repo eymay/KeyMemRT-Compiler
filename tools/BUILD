@@ -302,18 +302,3 @@ bzl_library(
     srcs = ["mlir-translate.bzl"],
     visibility = ["//visibility:public"],
 )
-
-cc_binary(
-    name = "heir-rotation-ilp-stress-test",
-    srcs = ["OptimizeRotationILPStressTest.cpp"],
-    deps = [
-        "@heir//lib/Analysis/OptimizeRotationBaseAnalysis",
-        "@heir//lib/Dialect/Openfhe/IR:Dialect",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:ArithDialect",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Support",
-    ],
-)
-
