@@ -72,7 +72,6 @@
 #include "lib/Transforms/ForwardStoreToLoad/ForwardStoreToLoad.h"
 #include "lib/Transforms/FullLoopUnroll/FullLoopUnroll.h"
 #include "lib/Transforms/GenerateParam/GenerateParam.h"
-// #include "lib/Transforms/KeyCompression/KeyCompression.h"  // Uses old openfhe ops
 #include "lib/Transforms/LayoutOptimization/LayoutOptimization.h"
 #include "lib/Transforms/LayoutPropagation/LayoutPropagation.h"
 #include "lib/Transforms/LinalgCanonicalizations/LinalgCanonicalizations.h"
@@ -295,7 +294,6 @@ int main(int argc, char **argv) {
   registerTensorLinalgToAffineLoops();
   // registerRotationDecomposePasses();  // Uses old openfhe ops
   // registerRotationDepthAnalysisPasses();  // Uses old openfhe ops
-  // registerKeyCompressionPasses();  // Uses old openfhe ops
   registerLowerLinearTransformPasses();
   registerBootstrapRotationAnalysisPasses();
   registerProfileAnnotatorPasses();
