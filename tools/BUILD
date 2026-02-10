@@ -133,7 +133,6 @@ cc_binary(
         "@heir//lib/Transforms/PolynomialApproximation",
         "@heir//lib/Transforms/PopulateScale",
         "@heir//lib/Transforms/PropagateAnnotation",
-        "@heir//lib/Transforms/RotationDecompose",
         "@heir//lib/Transforms/ProfileAnnotator",
         "@heir//lib/Transforms/SecretInsertMgmt",
         "@heir//lib/Transforms/Secretize",
