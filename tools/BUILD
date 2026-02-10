@@ -126,6 +126,7 @@ cc_binary(
         "@heir//lib/Transforms/MemrefToArith:ExpandCopy",
         "@heir//lib/Transforms/MemrefToArith:MemrefToArithRegistration",
         # "@heir//lib/Transforms/RotationDepthAnalysis",  # Uses old openfhe ops
+        "@heir//lib/Transforms/AddRotationKeys",
         # "@heir//lib/Transforms/KeyCompression",  # Uses old openfhe ops
         "@heir//lib/Transforms/LowerLinearTransform",
         "@heir//lib/Transforms/OperationBalancer",
@@ -134,6 +135,7 @@ cc_binary(
         "@heir//lib/Transforms/PopulateScale",
         "@heir//lib/Transforms/PropagateAnnotation",
         "@heir//lib/Transforms/RotationDecompose",
+        "@heir//lib/Transforms/ProfileAnnotator",
         "@heir//lib/Transforms/SecretInsertMgmt",
         "@heir//lib/Transforms/Secretize",
         "@heir//lib/Transforms/SelectRewrite",
@@ -142,6 +144,7 @@ cc_binary(
         "@heir//lib/Transforms/TensorLinalgToAffineLoops",
         "@heir//lib/Transforms/TensorToScalars",
         "@heir//lib/Transforms/UnusedMemRef",
+        "@heir//lib/Transforms/UnnecessaryBootstrapRemoval",
         "@heir//lib/Transforms/ValidateNoise",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineDialect",

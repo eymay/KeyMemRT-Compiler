@@ -55,6 +55,7 @@
 #include "lib/Pipelines/ArithmeticPipelineRegistration.h"
 #include "lib/Pipelines/BooleanPipelineRegistration.h"
 #include "lib/Pipelines/PipelineRegistration.h"
+#include "lib/Transforms/AddRotationKeys/AddRotationKeys.h"
 #include "lib/Transforms/AnnotateModule/AnnotateModule.h"
 #include "lib/Transforms/AnnotateSecretness/AnnotateSecretness.h"
 #include "lib/Transforms/ApplyFolders/ApplyFolders.h"
@@ -94,6 +95,7 @@
 #include "lib/Transforms/SymbolicBSGSDecomposition/SymbolicBSGSDecomposition.h"
 #include "lib/Transforms/TensorLinalgToAffineLoops/TensorLinalgToAffineLoops.h"
 #include "lib/Transforms/TensorToScalars/TensorToScalars.h"
+#include "lib/Transforms/UnnecessaryBootstrapRemoval/UnnecessaryBootstrapRemoval.h"
 #include "lib/Transforms/UnusedMemRef/UnusedMemRef.h"
 #include "lib/Transforms/ValidateNoise/ValidateNoise.h"
 #include "mlir/include/mlir/Conversion/AffineToStandard/AffineToStandard.h"  // from @llvm-project
@@ -300,6 +302,8 @@ int main(int argc, char **argv) {
   registerFHEFunctionOutliningPasses();
   registerProfileAnnotatorPasses();
   // registerMemoryEstimationPasses();  // Uses old openfhe ops
+  registerUnnecessaryBootstrapRemovalPasses();
+  registerAddRotationKeysPasses();
   registerSymbolicBSGSDecompositionPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS

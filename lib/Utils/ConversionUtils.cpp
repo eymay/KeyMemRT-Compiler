@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "llvm/include/llvm/ADT/TypeSwitch.h"              // from @llvm-project
 #include "mlir/include/mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"   // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -279,13 +280,12 @@ void addStructuralConversionPatterns(TypeConverter &typeConverter,
 }
 
 int widthFromEncodingAttr(Attribute encoding) {
-  return llvm::TypeSwitch<Attribute, int>(encoding)
-      .Case<lwe::BitFieldEncodingAttr, lwe::UnspecifiedBitFieldEncodingAttr>(
-          [](auto attr) -> int { return attr.getCleartextBitwidth(); })
-      .Default([](Attribute attr) -> int {
-        llvm_unreachable("Unsupported encoding attribute");
-        return 0;
-      });
+  // TODO: This function was added in a cherry-picked commit but uses
+  // BitFieldEncodingAttr which doesn't exist in this fork. Return a default
+  // value for now. This may need to be properly implemented if the callers
+  // require the actual width.
+  llvm_unreachable("widthFromEncodingAttr not yet implemented for this fork's encoding attrs");
+  return 0;
 }
 
 FailureOr<Value> getContextualArgFromFunc(Operation *op, Type argType) {

@@ -72,12 +72,8 @@ test_suite(
         # KMRT emitter tests
         "//tests/Dialect/KMRT/Emitters:emit_kmrt_rotation_keys.mlir.test",
 
-        # CKKS tests
-        # "//tests/Dialect/CKKS:keymemrt_encoding.mlir.test",
-        
         # OpenFHE tests
-        # "//tests/Transforms/mlir_to_openfhe_ckks:keymemrt_integration.mlir.test",
-        
+        "//tests/Dialect/Openfhe/Transforms:insert_clear_ops.mlir.test",
         "//tests/Dialect/Openfhe/Transforms:fast_rotation_precompute_affine.mlir.test",
 
         # Add any test from anywhere in the repo
