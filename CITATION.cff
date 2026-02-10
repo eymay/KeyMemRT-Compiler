@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "KeyMemRT Compiler and Runtime: Unlocking Memory-Scalable FHE"
+authors:
+  - family-names: "Ünay"
+    given-names: "Eymen"
+  - family-names: "Franke"
+    given-names: "Björn"
+  - family-names: "Woodruff"
+    given-names: "Jackson"
+url: "https://github.com/eymay/KeyMemRT-Compiler"
+repository-code: "https://github.com/eymay/KeyMemRT-Compiler"
+preferred-citation:
+  type: article
+  title: "KeyMemRT Compiler and Runtime: Unlocking Memory-Scalable FHE"
+  authors:
+    - family-names: "Ünay"
+      given-names: "Eymen"
+    - family-names: "Franke"
+      given-names: "Björn"
+    - family-names: "Woodruff"
+      given-names: "Jackson"
+  year: 2026
+  url: "https://arxiv.org/abs/2601.18445"
+  identifiers:
+    - type: other
+      value: "arXiv:2601.18445"
+      description: "The ArXiv preprint of the paper"
+  notes: "archivePrefix: arXiv, primaryClass: cs.CR"
