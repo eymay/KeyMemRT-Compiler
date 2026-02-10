@@ -6,6 +6,7 @@
 #include <sstream>
 #include <vector>
 
+#include "lib/Dialect/KMRT/IR/KMRTOps.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheOps.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/include/mlir/IR/Builders.h"
@@ -125,21 +126,40 @@ struct ProfileAnnotator : impl::ProfileAnnotatorBase<ProfileAnnotator> {
     auto profileEntries = ProfileParser::parseProfile(profileFile.getValue());
     if (profileEntries.empty()) {
       llvm::errs() << "No profile data found. Skipping annotation.\n";
+      signalPassFailure();
       return;
     }
 
     // Step 2: Build mapping from MLIR result names to profile entries
-    std::map<std::string, unsigned> outputToTowers;
-    std::map<std::string, unsigned> inputToTowers;
+    // Group by name and sort by line number to handle duplicate names
+    std::map<std::string, std::vector<ProfileEntry>> outputEntriesByName;
+    std::map<std::string, std::vector<ProfileEntry>> inputEntriesByName;
+
     for (const auto& entry : profileEntries) {
       if (entry.isInput) {
-        inputToTowers[entry.mlirName] = entry.towers;
-        llvm::errs() << "INPUT profile: " << entry.mlirName << " -> "
-                     << entry.towers << " towers\n";
+        inputEntriesByName[entry.mlirName].push_back(entry);
       } else {
-        outputToTowers[entry.mlirName] = entry.towers;
+        outputEntriesByName[entry.mlirName].push_back(entry);
       }
     }
+
+    // Sort each vector by line number for consistent ordering
+    for (auto& [name, entries] : outputEntriesByName) {
+      std::sort(entries.begin(), entries.end(),
+                [](const ProfileEntry& a, const ProfileEntry& b) {
+                  return a.line < b.line;
+                });
+    }
+    for (auto& [name, entries] : inputEntriesByName) {
+      std::sort(entries.begin(), entries.end(),
+                [](const ProfileEntry& a, const ProfileEntry& b) {
+                  return a.line < b.line;
+                });
+    }
+
+    // Track which occurrence (by line order) we're at for each name
+    std::map<std::string, unsigned> outputOccurrenceCount;
+    std::map<std::string, unsigned> inputOccurrenceCount;
 
     // Step 3: Walk all operations and annotate those with matching results
     unsigned annotatedOps = 0;
@@ -148,50 +168,79 @@ struct ProfileAnnotator : impl::ProfileAnnotatorBase<ProfileAnnotator> {
       for (auto result : operation->getResults()) {
         std::string resultName = getMLIRNameForValue(result);
 
-        auto it = outputToTowers.find(resultName);
-        if (it != outputToTowers.end()) {
-          // Found a match - annotate the operation with the towers count
-          operation->setAttr(
-              "result_towers",
-              IntegerAttr::get(IntegerType::get(ctx, 32), it->second));
+        auto it = outputEntriesByName.find(resultName);
+        if (it != outputEntriesByName.end()) {
+          const auto& entries = it->second;
+          unsigned& occurrenceIdx = outputOccurrenceCount[resultName];
 
-          llvm::errs() << "Annotated operation with result " << resultName
-                       << " with " << it->second << " towers\n";
-          annotatedOps++;
+          // Use the entry corresponding to this occurrence (by line order)
+          if (occurrenceIdx < entries.size()) {
+            const auto& entry = entries[occurrenceIdx];
+            occurrenceIdx++;
 
-          // Since we found a match for this operation, we can break
-          // (one annotation per operation is sufficient)
-          break;
-        }
-      }
-    });
-    op->walk([&](openfhe::RotOp rotOp) {
-      // Get the ciphertext input to this rotation
-      Value ciphertext = rotOp.getCiphertext();
-      std::string ctName = getMLIRNameForValue(ciphertext);
+            // Annotate the operation with the towers count
+            operation->setAttr(
+                "result_towers",
+                IntegerAttr::get(IntegerType::get(ctx, 32), entry.towers));
 
-      // Check if this ciphertext is in our input profile data
-      auto it = inputToTowers.find(ctName);
-      if (it != inputToTowers.end()) {
-        // Found a rotation with profiled input - now find the key source
-        Value evalKey = rotOp.getEvalKey();
+            // llvm::errs() << "Annotated operation with result " << resultName
+            //              << " (occurrence " << (occurrenceIdx - 1)
+            //              << ", line " << entry.line << ") with "
+            //              << entry.towers << " towers\n";
+            annotatedOps++;
 
-        // Trace back to find the DeserializeKeyOp that produced this key
-        if (auto defOp = evalKey.getDefiningOp()) {
-          if (auto deserOp = dyn_cast<openfhe::DeserializeKeyOp>(defOp)) {
-            // Annotate this DeserializeKeyOp with tower info
-            deserOp->setAttr(
-                "key_towers",
-                IntegerAttr::get(IntegerType::get(ctx, 32), it->second));
-            llvm::errs() << "Annotated DeserializeKeyOp for rotation of "
-                         << ctName << " with " << it->second << " towers\n";
+            // Since we found a match for this operation, we can break
+            // (one annotation per operation is sufficient)
+            break;
           }
         }
       }
     });
 
+    // Step 4: Walk rotation operations and annotate LoadKeyOp with key_level
+    auto annotateRotationKey = [&](Value ciphertext, Value evalKey) {
+      std::string ctName = getMLIRNameForValue(ciphertext);
+
+      // Check if this ciphertext is in our input profile data
+      auto it = inputEntriesByName.find(ctName);
+      if (it != inputEntriesByName.end()) {
+        const auto& entries = it->second;
+        unsigned& occurrenceIdx = inputOccurrenceCount[ctName];
+
+        // Use the entry corresponding to this occurrence (by line order)
+        if (occurrenceIdx < entries.size()) {
+          const auto& entry = entries[occurrenceIdx];
+          occurrenceIdx++;
+
+          // Found a rotation with profiled input - now find the key source
+          // Trace back to find the LoadKeyOp that produced this key
+          if (auto defOp = evalKey.getDefiningOp()) {
+            if (auto loadOp = dyn_cast<kmrt::LoadKeyOp>(defOp)) {
+              // Annotate this LoadKeyOp with level info (using key_level)
+              loadOp->setAttr(
+                  "key_level",
+                  IntegerAttr::get(IntegerType::get(ctx, 32), entry.level));
+              // llvm::errs() << "Annotated LoadKeyOp for rotation of " <<
+              // ctName
+              //              << " (occurrence " << (occurrenceIdx - 1)
+              //              << ", line " << entry.line << ") with key_level="
+              //              << entry.level << "\n";
+            }
+          }
+        }
+      }
+    };
+
+    op->walk([&](openfhe::RotOp rotOp) {
+      annotateRotationKey(rotOp.getCiphertext(), rotOp.getEvalKey());
+    });
+
+    op->walk([&](openfhe::FastRotationOp fastRotOp) {
+      annotateRotationKey(fastRotOp.getCiphertext(), fastRotOp.getEvalKey());
+    });
+
     llvm::errs() << "Profile annotation complete: " << annotatedOps
-                 << " operations annotated\n";
+                 << " operations annotated with result_towers\n";
   }
 
  private:
