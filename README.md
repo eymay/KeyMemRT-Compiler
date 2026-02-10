@@ -1,78 +1,107 @@
-# HEIR: Homomorphic Encryption Intermediate Representation
+# KeyMemRT Compiler
 
-![GitHub Workflow Status (with event)](https://img.shields.io/github/actions/workflow/status/google/heir/build_and_test.yml)
-![GitHub Contributors](https://img.shields.io/github/contributors/google/heir)
-![GitHub Discussions](https://img.shields.io/github/discussions/google/heir)
-![GitHub License](https://img.shields.io/github/license/google/heir)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/google/heir/badge)](https://securityscorecards.dev/viewer/?uri=github.com/google/heir)
+KeyMemRT is an FHE (Fully Homomorphic Encryption) compiler that reduces
+the memory footprint of FHE applications. It reuses the IR and infrastructure
+of [HEIR](https://github.com/google/heir).
 
-An MLIR-based toolchain for
-[homomorphic encryption](https://en.wikipedia.org/wiki/Homomorphic_encryption)
-compilers. Read the docs at [the HEIR website](https://heir.dev).
+More information is available in the KeyMemRT paper [here](https://arxiv.org/abs/2601.18445).
 
-For more information on MLIR, see the [MLIR homepage](https://mlir.llvm.org/).
+## Getting Started
 
-## Demo: HEIR Jupyter Playground
+KeyMemRT Compiler is built the same way as HEIR. Please follow HEIR
+[docs](https://heir.dev/docs/getting_started/#building-from-source) to build from source.
 
-This is a way to start running [HEIR](https://heir.dev) compiler passes in a
-Jupyter notebook or IPython notebook without having to build the entire HEIR
-project from scratch.
+Alternatively, here are the commands for an Ubuntu/x86 machine:
 
-Uses the
-[nightly HEIR build](https://github.com/google/heir/releases/tag/nightly). In
-this demo, we'll run locally in this github clone to access some external
-dependencies (e.g. Yosys).
+1. Install the prerequisites:
+```shell
+sudo apt update && sudo apt install wget python3 \
+clang lld libomp-dev \
+mold zlib1g-dev
+```
+2. Install `Bazelisk`
+```shell
+wget -c https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 && \
+mv bazelisk-linux-amd64 bazel && \
+chmod +x bazel && \
+mkdir -p ~/bin && \
+echo 'export PATH=$PATH:~/bin' >> ~/.bashrc && \
+mv bazel ~/bin/bazel && \
+source ~/.bashrc
+```
+3. Clone and build the repo:
+```shell
+git clone https://github.com/eymay/KeyMemRT-Compiler.git && cd KeyMemRT-Compiler/
+bazel build @heir//tools:heir-opt
+bazel build @heir//tools:heir-translate
+```
+KeyMemRT Compiler is a series of passes that can be called from the newly built driver `./bazel-bin/tools/heir-opt`.
 
-## Usage
-
-Load Jupyter in the `scripts/jupyter` notebook:
-
-```bash
-cd scripts/jupyter
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-jupyter notebook
+4. Run KeyMemRT tests:
+```shell
+bazel test //tests:keymemrt_tests
 ```
 
-The demo is in [Demo.ipynb](scripts/jupyter/Demo.ipynb).
+## KeyMemRT Pipeline
 
-Then connect to your Jupyter runtime and start executing the demo!
+KeyMemRT adds the passes listed below:
+```shell
+--lower-linear-transform        
+--symbolic-bsgs-decomposition   
+--kmrt-merge-rotation-keys      
+--kmrt-key-prefetching          
+--profile-annotator
+--remove-unnecessary-bootstraps
+--bootstrap-rotation-analysis
+--openfhe-insert-clear-ops      
+--kmrt-key-prefetching
+```
+KeyMemRT reuses these HEIR and MLIR passes, some with modifications:
+```shell
+--ckks-to-lwe
+--lwe-to-openfhe
+--openfhe-configure-crypto-context  
+--openfhe-fast-rotation-precompute
+--cse
+--lower-affine
+```
 
-## Contributing
+An example pipeline to lower the HEIR `ckks` dialect to `openfhe` dialect with KeyMemRT key management is:
+```
+./bazel-bin/tools/heir-opt
+	--ckks-to-lwe \ 
+    --lwe-to-openfhe \
+	--lower-linear-transform \
+	--symbolic-bsgs-decomposition \
+    --kmrt-merge-rotation-keys \
+	--annotate-module="backend=openfhe scheme=ckks" \
+	--openfhe-configure-crypto-context \
+    --openfhe-fast-rotation-precompute \
+    --bootstrap-rotation-analysis \
+    --kmrt-merge-rotation-keys \
+    --cse \
+    --openfhe-insert-clear-ops \
+    <ckks-input.mlir> > <static-out.mlir>
+```
+This will result in the KeyMemRT Low Memory mode execution that disk IO and computation will block each other.
+To enable prefetching and to get to KeyMemRT Balanced mode, these passes can be added in the end:
 
-There are many ways to contribute to HEIR:
+```
+...
+--kmrt-key-prefetching="runtime-delegated=1" \
+--lower-affine` \
+```
 
-- Come to our [twice-monthly meetings](https://heir.dev/community/) to discuss
-  active work on HEIR and future project directions. The meetings are recorded
-  and posted to our [blog](https://heir.dev/blog/)
-- Work on an issue marked
-  ["good first issue"](https://github.com/google/heir/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22)
-  or browse issues [labeled by topic](https://github.com/google/heir/labels).
-- Tell us about what you'd like to use HEIR for in an
-  [offline discussion thread](https://github.com/google/heir/discussions).
-- Help us understand new FHE research: either
-  - Read a paper tagged under
-    [research synthesis](https://github.com/google/heir/labels/research%20synthesis)
-    and summarize the novel techniques that could be ported to HEIR.
-  - File new issues under
-    [research synthesis](https://github.com/google/heir/labels/research%20synthesis)
-    to alert us of papers that should be investigated and incorporated into
-    HEIR.
+## Cite
 
-## Citations
-
-The HEIR project can be cited in in academic work through following entry:
-
-```text
-@Misc{HEIR,
-  title={{HEIR: Homomorphic Encryption Intermediate Representation}},
-  author={HEIR Contributors},
-  year={2023},
-  note={\url{https://github.com/google/heir}},
+```bibtex
+@misc{ünay2026keymemrt,
+      title={KeyMemRT Compiler and Runtime: Unlocking Memory-Scalable FHE}, 
+      author={Eymen Ünay and Björn Franke and Jackson Woodruff},
+      year={2026},
+      eprint={2601.18445},
+      archivePrefix={arXiv},
+      primaryClass={cs.CR},
+      url={https://arxiv.org/abs/2601.18445}, 
 }
 ```
-
-## Support disclaimer
-
-This is not an officially supported Google product.
