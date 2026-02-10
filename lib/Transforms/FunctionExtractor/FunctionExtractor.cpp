@@ -38,21 +38,22 @@ struct FunctionExtractor : impl::FunctionExtractorBase<FunctionExtractor> {
       return signalPassFailure();
     }
 
-    // Create a new module with just the target function
-    auto context = moduleOp.getContext();
-    auto newModule = ModuleOp::create(moduleOp.getLoc());
+    // Instead of creating a new module, modify the existing one
+    // Remove all functions except the target function
+    SmallVector<func::FuncOp> functionsToErase;
+    for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
+      if (funcOp != targetFunc) {
+        functionsToErase.push_back(funcOp);
+      }
+    }
 
-    OpBuilder builder(context);
-    builder.setInsertionPointToStart(newModule.getBody());
+    // Erase all other functions
+    for (auto funcToErase : functionsToErase) {
+      funcToErase.erase();
+    }
 
-    // Clone the target function into the new module
-    auto clonedFunc = cast<func::FuncOp>(builder.clone(*targetFunc));
-
-    // Print the new module to stdout
-    newModule.print(llvm::outs());
-
-    // Clean up
-    newModule.erase();
+    // The modified module (now containing only the target function)
+    // will be automatically printed by MLIR pass infrastructure
   }
 };
 
