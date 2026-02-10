@@ -77,7 +77,6 @@
 #include "lib/Transforms/LinalgCanonicalizations/LinalgCanonicalizations.h"
 #include "lib/Transforms/LowerLinearTransform/LowerLinearTransform.h"
 #include "lib/Transforms/LowerPolynomialEval/LowerPolynomialEval.h"
-// #include "lib/Transforms/MemoryEstimation/MemoryEstimation.h"  // Uses old openfhe ops
 #include "lib/Transforms/OperationBalancer/OperationBalancer.h"
 #include "lib/Transforms/OptimizeRelinearization/OptimizeRelinearization.h"
 #include "lib/Transforms/PolynomialApproximation/PolynomialApproximation.h"
@@ -297,7 +296,6 @@ int main(int argc, char **argv) {
   registerLowerLinearTransformPasses();
   registerBootstrapRotationAnalysisPasses();
   registerProfileAnnotatorPasses();
-  // registerMemoryEstimationPasses();  // Uses old openfhe ops
   registerUnnecessaryBootstrapRemovalPasses();
   registerAddRotationKeysPasses();
   registerSymbolicBSGSDecompositionPasses();
