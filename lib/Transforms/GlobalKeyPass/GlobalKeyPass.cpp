@@ -47,11 +47,7 @@ struct ConvertRotateOp : public OpRewritePattern<FromOp> {
     auto evalKey = op.getEvalKey();
     auto evalKeyType = evalKey.getType();
 
-    if (!evalKeyType.getRotationIndex()) {
-      return failure();
-    }
-
-    int64_t rotationIndex = evalKeyType.getRotationIndex().getInt();
+    int64_t rotationIndex = evalKeyType.getRotationIndex();
 
     // Replace with global rotate - don't create deserialize, that's handled
     // separately
@@ -74,11 +70,7 @@ struct ConvertClearKeyOp : public OpRewritePattern<FromOp> {
     auto evalKey = op.getEvalKey();
     auto evalKeyType = evalKey.getType();
 
-    if (!evalKeyType.getRotationIndex()) {
-      return failure();
-    }
-
-    int64_t rotationIndex = evalKeyType.getRotationIndex().getInt();
+    int64_t rotationIndex = evalKeyType.getRotationIndex();
 
     // Replace with global clear
     rewriter.replaceOpWithNewOp<ToOp>(op, op.getCryptoContext(),

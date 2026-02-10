@@ -233,6 +233,8 @@ struct GlobalConfigureCryptoContext
       auto genRotKeyOp = builder.create<openfhe::GenRotKeyOp>(
           builder.getUnknownLoc(), updatedContext, privateKey,
           builder.getDenseI64ArrayAttr(indexVec));
+      genRotKeyOp->setAttr("bootstrap_enabled",
+                           builder.getBoolAttr(config.hasBootstrapOp));
     }
 
     // Generate bootstrap setup and keys if needed
