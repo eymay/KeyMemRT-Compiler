@@ -128,6 +128,7 @@ cc_binary(
         # "@heir//lib/Transforms/RotationDepthAnalysis",  # Uses old openfhe ops
         "@heir//lib/Transforms/AddRotationKeys",
         "@heir//lib/Transforms/LowerLinearTransform",
+        "@heir//lib/Transforms/LLTTypeInference",
         "@heir//lib/Transforms/OperationBalancer",
         "@heir//lib/Transforms/OptimizeRelinearization",
         "@heir//lib/Transforms/PolynomialApproximation",
