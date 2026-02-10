@@ -68,7 +68,6 @@
 #include "lib/Transforms/ConvertToCiphertextSemantics/ConvertToCiphertextSemantics.h"
 #include "lib/Transforms/DropUnitDims/DropUnitDims.h"
 #include "lib/Transforms/ElementwiseToAffine/ElementwiseToAffine.h"
-#include "lib/Transforms/FHEFunctionOutlining/FHEFunctionOutlining.h"
 #include "lib/Transforms/ForwardInsertToExtract/ForwardInsertToExtract.h"
 #include "lib/Transforms/ForwardStoreToLoad/ForwardStoreToLoad.h"
 #include "lib/Transforms/FullLoopUnroll/FullLoopUnroll.h"
@@ -299,7 +298,6 @@ int main(int argc, char **argv) {
   // registerKeyCompressionPasses();  // Uses old openfhe ops
   registerLowerLinearTransformPasses();
   registerBootstrapRotationAnalysisPasses();
-  registerFHEFunctionOutliningPasses();
   registerProfileAnnotatorPasses();
   // registerMemoryEstimationPasses();  // Uses old openfhe ops
   registerUnnecessaryBootstrapRemovalPasses();
