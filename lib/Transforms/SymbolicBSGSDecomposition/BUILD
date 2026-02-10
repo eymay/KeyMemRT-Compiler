@@ -19,6 +19,7 @@ cc_library(
 	"@llvm-project//mlir:AffineAnalysis",
         "@llvm-project//mlir:AffineUtils",
         "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:Transforms",

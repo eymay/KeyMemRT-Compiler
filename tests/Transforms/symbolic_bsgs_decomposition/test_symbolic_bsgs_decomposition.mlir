@@ -13,7 +13,6 @@
 #key = #lwe.key<>
 // CHECK-DAG: #[[GIANT_STEP:.*]] = affine_map<(d0)[s0] -> (d0 * s0)>
 // CHECK-DAG: #[[ACTUAL_IDX:.*]] = affine_map<(d0, d1)[s0] -> (d0 * s0 + d1)>
-// CHECK-DAG: #[[REM_IDX:.*]] = affine_map<(d0) -> (d0 + 12)>
 #modulus_chain_L5_C5 = #lwe.modulus_chain<elements = <536903681 : i64, 67043329 : i64, 66994177 : i64, 67239937 : i64, 66961409 : i64, 66813953 : i64>, current = 5>
 #ring_f64_1 = #polynomial.ring<coefficientType = f64, polynomialModulus = <1>>
 #ring_f64_1_x8192 = #polynomial.ring<coefficientType = f64, polynomialModulus = <1 + x**8192>>
@@ -46,30 +45,31 @@ module attributes {ckks.schemeParam = #ckks.scheme_param<logN = 13, Q = [5369036
     %pt = lwe.rlwe_encode %extracted_slice {encoding = #inverse_canonical_encoding1, ring = #ring_f64_1} : tensor<4xf64> -> !pt
     %ct_0 = openfhe.mul_plain %cc, %ct, %pt : (!cc, !ct_L5, !pt) -> !ct_L5
     // CHECK: %[[N2:.*]] = arith.constant {bsgs.tunable_param = "baby_step_size"} 4 : index
-    // CHECK: affine.for %[[GIANT_IV:.*]] = 0 to 3
-    // CHECK:   %[[GIANT_AMT:.*]] = affine.apply #[[GIANT_STEP]](%[[GIANT_IV]])[%[[N2]]]
-    // CHECK:   %[[EK_GIANT:.*]] = kmrt.load_key %[[GIANT_AMT]] : index -> <>
-    // CHECK:   %[[CT_GIANT:.*]] = openfhe.rot %cc, %ct, %[[EK_GIANT]]
-    // CHECK:   kmrt.clear_key %[[EK_GIANT]] : <>
-    // CHECK:   affine.for %[[BABY_IV:.*]] = 0 to 4
-    // CHECK:     %[[ACTUAL_IV:.*]] = affine.apply #[[ACTUAL_IDX]](%[[GIANT_IV]], %[[BABY_IV]])[%[[N2]]]
-    // CHECK:     %[[EK_BABY:.*]] = kmrt.load_key %[[BABY_IV]] : index -> <>
-    // CHECK:     %[[CT_BABY:.*]] = openfhe.rot %cc, %[[CT_GIANT]], %[[EK_BABY]]
-    // CHECK:     kmrt.clear_key %[[EK_BABY]] : <>
-    // CHECK:     tensor.extract_slice
-    // CHECK:     lwe.rlwe_encode
-    // CHECK:     openfhe.mul_plain
-    // CHECK:     openfhe.add
-    // Remainder loop
-    // CHECK: %[[C12:.*]] = arith.constant 12 : index
-    // CHECK: %[[EK_REM_GIANT:.*]] = kmrt.load_key %[[C12]] : index -> <>
-    // CHECK: %[[CT_REM_GIANT:.*]] = openfhe.rot %cc, %ct, %[[EK_REM_GIANT]]
-    // CHECK: kmrt.clear_key %[[EK_REM_GIANT]] : <>
-    // CHECK: affine.for %[[REM_IV:.*]] = 0 to 3
-    // CHECK:   %[[REM_ACTUAL_IV:.*]] = affine.apply #[[REM_IDX]](%[[REM_IV]])
-    // CHECK:   %[[EK_REM_BABY:.*]] = kmrt.load_key %[[REM_IV]] : index -> <>
-    // CHECK:   %[[CT_REM_BABY:.*]] = openfhe.rot %cc, %[[CT_REM_GIANT]], %[[EK_REM_BABY]]
-    // CHECK:   kmrt.clear_key %[[EK_REM_BABY]] : <>
+    // CHECK: %[[MEMREF:.*]] = memref.alloca() : memref<4x!rk>
+    // Prologue loop to pre-load baby step keys
+    // CHECK: affine.for %{{.*}} = 0 to 4
+    // CHECK:   kmrt.load_key
+    // CHECK:   memref.store
+    // Main BSGS outer loop
+    // CHECK: affine.for %[[GIANT_IV:.*]] = 1 to 2
+    // CHECK:   affine.apply #[[GIANT_STEP]]
+    // CHECK:   kmrt.load_key
+    // CHECK:   openfhe.rot
+    // CHECK:   kmrt.clear_key
+    // Inner loop uses memref.load + use_key
+    // CHECK:   affine.for %{{.*}} = 0 to 4
+    // CHECK:     affine.apply #[[ACTUAL_IDX]]
+    // CHECK:     memref.load
+    // CHECK:     kmrt.use_key
+    // Epilogue section
+    // CHECK: arith.constant 2 : index
+    // CHECK: affine.apply #[[GIANT_STEP]]
+    // CHECK: kmrt.load_key
+    // CHECK: affine.for %{{.*}} = 0 to 4
+    // CHECK:   affine.apply #[[ACTUAL_IDX]]
+    // CHECK:   memref.load
+    // CHECK:   kmrt.use_key
+    // CHECK:   kmrt.clear_key
     %ct_1 = affine.for %arg0 = 1 to 16 iter_args(%ct_2 = %ct_0) -> (!ct_L5) {
       %0 = arith.index_cast %arg0 : index to i64
       %rk = kmrt.load_key %0 : i64 -> !rk
