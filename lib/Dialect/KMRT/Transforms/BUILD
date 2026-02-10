@@ -95,19 +95,6 @@ cc_library(
     ],
 )
 
-    deps = [
-        ":pass_inc_gen",
-        "@heir//lib/Dialect/KMRT/IR:Dialect",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:AffineDialect",
-        "@llvm-project//mlir:ArithDialect",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Pass",
-        "@llvm-project//mlir:SCFDialect",
-        "@llvm-project//mlir:Support",
-    ],
-)
-
 gentbl_cc_library(
     name = "pass_inc_gen",
     tbl_outs = {

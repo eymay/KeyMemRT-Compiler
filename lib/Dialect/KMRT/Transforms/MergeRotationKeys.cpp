@@ -305,9 +305,9 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     // Perform the merges
     for (auto &[clearOp, loadOp] : pairsToMerge) {
       Value originalKey = clearOp.getRotKey();
-      auto clearLoadOp = originalKey.getDefiningOp<LoadKeyOp>();
-      auto maybeClearIndex =
-          clearLoadOp ? getConstantIndex(clearLoadOp) : std::nullopt;
+      // auto clearLoadOp = originalKey.getDefiningOp<LoadKeyOp>();
+      // auto maybeClearIndex =
+      //     clearLoadOp ? getConstantIndex(clearLoadOp) : std::nullopt;
 
       // llvm::errs() << "  Merging key "
       //              << (maybeClearIndex ? std::to_string(*maybeClearIndex) :
