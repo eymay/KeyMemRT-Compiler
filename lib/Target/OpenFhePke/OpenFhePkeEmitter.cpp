@@ -1308,12 +1308,6 @@ LogicalResult OpenFhePkeEmitter::printOperation(kmrt::LoadKeyOp op) {
     os << variableNames->getNameForValue(indexValue);
   }
 
-  if (auto depthAttr = op->getAttrOfType<IntegerAttr>("key_depth")) {
-    os << ", " << depthAttr.getInt();
-  } else if (auto levelAttr = op->getAttrOfType<IntegerAttr>("key_level")) {
-    os << ", " << levelAttr.getInt();
-  }
-
   os << ");\n";
 
   return success();

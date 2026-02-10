@@ -116,7 +116,6 @@ cc_binary(
         "@heir//lib/Transforms/ElementwiseToAffine",
         "@heir//lib/Transforms/ForwardInsertToExtract",
         "@heir//lib/Transforms/ForwardStoreToLoad",
-        "@heir//lib/Transforms/FHEFunctionOutlining",
         "@heir//lib/Transforms/FullLoopUnroll",
         "@heir//lib/Transforms/GenerateParam",
         "@heir//lib/Transforms/LayoutOptimization",
