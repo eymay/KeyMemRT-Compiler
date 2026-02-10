@@ -954,6 +954,7 @@ def process_input(input_data, verbose=False):
     saturated_bsgs = input_data.get('saturated_bsgs', True)
     use_simple_bsgs = input_data.get('use_simple_bsgs', False)
     min_range_length = input_data.get('min_range_length', 3)
+    use_binary_decomposition = input_data.get('use_binary_decomposition', False)
 
     if use_simple_bsgs:
         if verbose:
@@ -961,6 +962,9 @@ def process_input(input_data, verbose=False):
         
         base_set, decompositions, unreachable, total_steps = simple_bsgs_optimization(
             target_numbers, verbose)
+    elif use_binary_decomposition:
+            print("Using Binary Decomposition")
+            base_set, decompositions, unreachable, total_steps = apply_binary_decomposition(target_numbers, verbose)
     else:
         # Create optimizer
         optimizer = AdditionGraphMIPOptimizer(target_numbers, max_chain_length, verbose)
@@ -1018,6 +1022,87 @@ def process_input(input_data, verbose=False):
     return result
 
 
+def apply_binary_decomposition(target_numbers, verbose=False):
+    """
+    Apply binary decomposition to decompose numbers into sums of powers of two.
+    
+    Args:
+        target_numbers: List of integers to decompose
+        verbose: Whether to print detailed information
+        
+    Returns:
+        base_elements: List of powers of two needed (base set)
+        decompositions: Dictionary mapping target -> list of powers of two
+        unreachable: Set of numbers that cannot be decomposed (should be empty)
+        total_steps: Total number of addition steps needed
+    """
+    if not target_numbers:
+        return [], {}, set(), 0
+    
+    # Find all powers of two needed
+    max_target = max(target_numbers)
+    base_elements = []
+    
+    # Find the highest power of 2 needed
+    power = 0
+    while (1 << power) <= max_target:
+        base_elements.append(1 << power)  # 2^power
+        power += 1
+    
+    if verbose:
+        print(f"Binary decomposition for targets up to {max_target}:")
+        print(f"  Powers of 2 needed: {base_elements}")
+        print(f"  Base set size: {len(base_elements)}")
+    
+    # Decompose each target number
+    decompositions = {}
+    total_steps = 0
+    
+    for target in target_numbers:
+        if target <= 0:
+            # Cannot decompose non-positive numbers
+            decompositions[target] = None
+            continue
+            
+        decomp = []
+        remaining = target
+        
+        # Use binary representation to find decomposition
+        for power_of_2 in reversed(base_elements):  # Start from highest power
+            if remaining >= power_of_2:
+                decomp.append(power_of_2)
+                remaining -= power_of_2
+        
+        if remaining == 0:
+            # Sort in descending order for consistency
+            decompositions[target] = sorted(decomp, reverse=True)
+            # Steps = number of powers of 2 used - 1
+            total_steps += max(0, len(decomp) - 1)
+            
+            if verbose and target in target_numbers[:10]:  # Show first 10
+                binary_repr = bin(target)[2:]  # Remove '0b' prefix
+                print(f"  {target} = {' + '.join(map(str, decomp))} (binary: {binary_repr})")
+        else:
+            # This should never happen for positive integers
+            decompositions[target] = None
+    
+    # All positive integers should be reachable with binary decomposition
+    unreachable = set()
+    for target, decomp in decompositions.items():
+        if decomp is None:
+            unreachable.add(target)
+    
+    if verbose:
+        print(f"Binary decomposition completed:")
+        print(f"  Base set size: {len(base_elements)}")
+        print(f"  Coverage: {(len(target_numbers) - len(unreachable)) / len(target_numbers) * 100:.1f}%")
+        print(f"  Total steps: {total_steps}")
+        if unreachable:
+            print(f"  Unreachable: {sorted(unreachable)}")
+    
+    return base_elements, decompositions, unreachable, total_steps
+
+
 def main():
     """
     Main function to handle command line arguments and stdin/stdout.
@@ -1032,6 +1117,9 @@ def main():
                     help='Use simple BSGS instead of advanced optimization')
     parser.add_argument('--min-range', type=int, default=3, 
                     help='Minimum length of range to apply BSGS')
+    parser.add_argument('--binary-decomposition', action='store_true',
+                        help='Use binary decomposition (powers of 2)')
+ 
     args = parser.parse_args()
     
     # Read input
@@ -1051,6 +1139,9 @@ def main():
         
     if args.min_range is not None:
         input_data['min_range_length'] = args.min_range
+
+    if args.binary_decomposition:
+        input_data['use_binary_decomposition'] = True
     
     # Process input
     result = process_input(input_data, args.verbose)

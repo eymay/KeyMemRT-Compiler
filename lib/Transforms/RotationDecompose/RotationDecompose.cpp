@@ -411,7 +411,9 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     // Output some statistics
     LLVM_DEBUG(
         std::string optimizationMethod =
-            useSimpleBsgs ? "simple BSGS" : "advanced MIP";
+            useBinaryDecomposition
+                ? "Binary Decomp"
+                : (useSimpleBsgs ? "simple BSGS" : "advanced MIP");
         llvm::dbgs() << "RotationDecompose Pass: Successfully optimized with "
                      << optimizationMethod << " using base set: ";
         for (int64_t idx : baseSet) { llvm::dbgs() << idx << " "; } llvm::dbgs()
@@ -457,7 +459,9 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     ss << "  \"include_non_targets\": true,\n";
 
     // Add the simple BSGS option
-    if (useSimpleBsgs) {
+    if (useBinaryDecomposition) {
+      ss << "  \"use_binary_decomposition\": true,\n";
+    } else if (useSimpleBsgs) {
       ss << "  \"use_simple_bsgs\": true,\n";
       ss << "  \"min_range_length\": " << minRangeLength << ",\n";
     } else {
@@ -493,6 +497,8 @@ struct RotationDecompose : impl::RotationDecomposeBase<RotationDecompose> {
     // Add simple BSGS flag if enabled
     if (useSimpleBsgs) {
       cmd += " --simple-bsgs";
+    } else if (useBinaryDecomposition) {
+      cmd += " --binary-decomposition";
     } else {
       cmd += " --saturated-bsgs";
     }

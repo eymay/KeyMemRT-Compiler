@@ -40,6 +40,8 @@ def RotationDecompose : Pass<"rotation-decompose"> {
            "Time limit for the optimizer in seconds (ignored in simple BSGS mode)">,
     Option<"useSimpleBsgs", "use-simple-bsgs", "bool", /*default=*/"false",
            "Use simple BSGS instead of the advanced MIP optimizer. This automatically determines optimal parameters and ignores base-set-size, max-chain-length, and min-range-length.">,
+    Option<"useBinaryDecomposition", "use-binary-decomposition", "bool", /*default=*/"false",
+           "Use binary decomposition (powers of 2) for rotation indices">,
     Option<"minRangeLength", "min-range-length", "unsigned", /*default=*/"3",
            "Minimum length of contiguous range to apply BSGS (ignored in simple BSGS mode, only used with advanced optimization)">
   ];
