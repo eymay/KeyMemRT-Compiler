@@ -83,7 +83,6 @@
 #include "lib/Transforms/PopulateScale/PopulateScale.h"
 #include "lib/Transforms/ProfileAnnotator/ProfileAnnotator.h"
 #include "lib/Transforms/PropagateAnnotation/PropagateAnnotation.h"
-#include "lib/Transforms/RotationDepthAnalysis/RotationDepthAnalysis.h"
 #include "lib/Transforms/SecretInsertMgmt/Passes.h"
 #include "lib/Transforms/Secretize/Passes.h"
 #include "lib/Transforms/SelectRewrite/SelectRewrite.h"
@@ -290,7 +289,6 @@ int main(int argc, char **argv) {
   registerLowerPolynomialEvalPasses();
   registerTensorToScalarsPasses();
   registerTensorLinalgToAffineLoops();
-  // registerRotationDepthAnalysisPasses();  // Uses old openfhe ops
   registerLowerLinearTransformPasses();
   registerBootstrapRotationAnalysisPasses();
   registerProfileAnnotatorPasses();
