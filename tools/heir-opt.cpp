@@ -72,7 +72,6 @@
 #include "lib/Transforms/ForwardStoreToLoad/ForwardStoreToLoad.h"
 #include "lib/Transforms/FullLoopUnroll/FullLoopUnroll.h"
 #include "lib/Transforms/GenerateParam/GenerateParam.h"
-#include "lib/Transforms/LLTTypeInference/LLTTypeInference.h"
 #include "lib/Transforms/LayoutOptimization/LayoutOptimization.h"
 #include "lib/Transforms/LayoutPropagation/LayoutPropagation.h"
 #include "lib/Transforms/LinalgCanonicalizations/LinalgCanonicalizations.h"
@@ -301,7 +300,6 @@ int main(int argc, char **argv) {
   // registerMemoryEstimationPasses();  // Uses old openfhe ops
   registerUnnecessaryBootstrapRemovalPasses();
   registerAddRotationKeysPasses();
-  registerLLTTypeInferencePasses();
   registerSymbolicBSGSDecompositionPasses();
   // Register yosys optimizer pipeline if configured.
 #ifndef HEIR_NO_YOSYS
