@@ -1,6 +1,6 @@
 # KeyMemRT Compiler
 
-KeyMemRT is an FHE (Fully Homomorphic Encryption) compiler that reduces
+KeyMemRT-Compiler is an FHE (Fully Homomorphic Encryption) compiler that reduces
 the memory footprint of FHE applications. It reuses the IR and infrastructure
 of [HEIR](https://github.com/google/heir).
 
