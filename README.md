@@ -32,10 +32,10 @@ source ~/.bashrc
 3. Clone and build the repo:
 ```shell
 git clone https://github.com/eymay/KeyMemRT-Compiler.git && cd KeyMemRT-Compiler/
-bazel build @heir//tools:heir-opt
-bazel build @heir//tools:heir-translate
+bazel build //tools:keymemrt-opt
+bazel build //tools:keymemrt-translate
 ```
-KeyMemRT Compiler is a series of passes that can be called from the newly built driver `./bazel-bin/tools/heir-opt`.
+KeyMemRT Compiler is a series of passes that can be called from the newly built driver `./bazel-bin/tools/keymemrt-opt`.
 
 4. Run KeyMemRT tests:
 ```shell
@@ -68,8 +68,8 @@ KeyMemRT reuses these HEIR and MLIR passes, some with modifications:
 
 An example pipeline to lower the HEIR `ckks` dialect to `openfhe` dialect with KeyMemRT key management is:
 ```
-./bazel-bin/tools/heir-opt
-	--ckks-to-lwe \ 
+./bazel-bin/tools/keymemrt-opt \
+	--ckks-to-lwe \
     --lwe-to-openfhe \
 	--lower-linear-transform \
 	--symbolic-bsgs-decomposition \
