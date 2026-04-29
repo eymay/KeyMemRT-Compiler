@@ -114,9 +114,11 @@ struct ConvertRotateOp : public OpConversionPattern<RotateOp> {
     Value cryptoContext = result.value();
     Location loc = op.getLoc();
 
-    // Get the rotation index
-    auto rotIndexAttr = adaptor.getOffset();
-    int64_t rotIndex = rotIndexAttr.getInt();
+    // Get the rotation index, normalized to i64 so the kmrt key type and the
+    // arith.constant agree regardless of whether the input attr was i32/i64.
+    auto rotIndexAttrIn = adaptor.getStaticShift();
+    int64_t rotIndex = rotIndexAttrIn.getInt();
+    auto rotIndexAttr = rewriter.getI64IntegerAttr(rotIndex);
 
     // Create a constant for the rotation index
     Value rotIndexValue = rewriter.create<mlir::arith::ConstantOp>(

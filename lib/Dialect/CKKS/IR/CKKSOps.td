@@ -97,7 +97,7 @@ def CKKS_RotateOp : CKKS_Op<"rotate", [AllTypesMatch<["input", "output"]>]> {
 
   let arguments = (ins
     LWECiphertext:$input,
-    Builtin_IntegerAttr:$offset
+    Builtin_IntegerAttr:$static_shift
   );
 
   let results = (outs
@@ -173,9 +173,6 @@ def CKKS_RelinearizeOp : CKKS_Op<"relinearize", [SameOperandsAndResultRings,
   let results = (outs
     LWECiphertext:$output
   );
-
-  // let hasVerifier = 1;
-  let assemblyFormat = "operands attr-dict `:` qualified(type($input)) `->` qualified(type($output))" ;
 }
 
 def CKKS_RescaleOp : CKKS_Op<"rescale"> {

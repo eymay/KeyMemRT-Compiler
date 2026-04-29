@@ -107,7 +107,7 @@ def BGV_RotateColumnsOp : BGV_Op<"rotate_cols", [AllTypesMatch<["input", "output
 
   let arguments = (ins
     LWECiphertext:$input,
-    Builtin_IntegerAttr:$offset
+    Builtin_IntegerAttr:$static_shift
   );
 
   let results = (outs
@@ -133,7 +133,7 @@ def BGV_RotateRowsOp : BGV_Op<"rotate_rows", [AllTypesMatch<["input", "output"]>
 
   let arguments = (ins
     LWECiphertext:$input,
-    Builtin_IntegerAttr:$offset
+    Builtin_IntegerAttr:$static_shift
   );
 
   let results = (outs
