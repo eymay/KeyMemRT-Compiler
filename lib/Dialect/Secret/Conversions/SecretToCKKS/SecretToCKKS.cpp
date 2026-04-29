@@ -152,10 +152,8 @@ class SecretToCKKSTypeConverter
       moduliChain.push_back(modulus);
     }
 
-    auto ciphertext = lwe::NewLWECiphertextType::get(
+    auto ciphertext = lwe::LWECiphertextType::get(
         ctx,
-        lwe::ApplicationDataAttr::get(ctx, type.getValueType(),
-                                      lwe::NoOverflowAttr::get(ctx)),
         lwe::PlaintextSpaceAttr::get(
             ctx, plaintextRing,
             lwe::InverseCanonicalEncodingAttr::get(ctx, scale)),
@@ -175,13 +173,6 @@ class SecretToCKKSTypeConverter
     // into tensors of RLWE ciphertexts.
     assert(dyn_cast<RankedTensorType>(valueTy) &&
            "expected ranked tensor type");
-    auto scalarType = cast<RankedTensorType>(valueTy).getElementType();
-    ciphertext = lwe::NewLWECiphertextType::get(
-        ctx,
-        lwe::ApplicationDataAttr::get(ctx, scalarType,
-                                      lwe::NoOverflowAttr::get(ctx)),
-        ciphertext.getPlaintextSpace(), ciphertext.getCiphertextSpace(),
-        ciphertext.getKey(), ciphertext.getModulusChain());
     return RankedTensorType::get(cast<RankedTensorType>(valueTy).getShape(),
                                  ciphertext);
   }
@@ -202,7 +193,7 @@ class SecretGenericTensorExtractConversion
       ArrayRef<NamedAttribute> attributes,
       ContextAwareConversionPatternRewriter &rewriter) const override {
     auto inputTy = inputs[0].getType();
-    if (!isa<lwe::NewLWECiphertextType>(getElementTypeOrSelf(inputTy))) {
+    if (!isa<lwe::LWECiphertextType>(getElementTypeOrSelf(inputTy))) {
       return failure();
     }
     if (isa<RankedTensorType>(inputTy)) {
@@ -214,25 +205,11 @@ class SecretGenericTensorExtractConversion
           .getOperation();
     }
     // Extracts an element out of a slot of a single ciphertext.
-    // TODO(#913): Once we have a layout descriptor, we should be able to
-    // translate a tensor.extract into the appropriate ckks.extract operation.
-    // For now, if there we are extracting a multi-dimensional tensor with
-    // only one non-unit dimension stored in a single ciphertext along that
-    // dimension, then extract on the index of the non-unit dimension.
-    auto lweCiphertextInputTy = cast<lwe::NewLWECiphertextType>(inputTy);
-    auto underlyingTy = cast<RankedTensorType>(
-        lweCiphertextInputTy.getApplicationData().getMessageType());
-    auto nonUnitDim = getNonUnitDimension(underlyingTy);
-    if (failed(nonUnitDim)) {
-      return failure();
-    }
-    assert(inputs.size() == 1 + underlyingTy.getRank() &&
-           "expected tensor.extract inputs for each index");
-    auto nonUnitShift = inputs[1 + nonUnitDim.value().first];
-    return rewriter
-        .replaceOpWithNewOp<ckks::ExtractOp>(op, outputTypes[0], inputs[0],
-                                             nonUnitShift)
-        .getOperation();
+    // application_data was removed from LWECiphertextType, so we can no
+    // longer recover the underlying tensor type from the ciphertext to
+    // determine the non-unit dimension. This path is not exercised by
+    // keymemrt-opt; bail out.
+    return failure();
   }
 };
 
@@ -246,7 +223,7 @@ class SecretGenericTensorInsertConversion
       secret::GenericOp op, TypeRange outputTypes, ValueRange inputs,
       ArrayRef<NamedAttribute> attributes,
       ContextAwareConversionPatternRewriter &rewriter) const override {
-    if (!isa<lwe::NewLWECiphertextType>(inputs[0].getType())) {
+    if (!isa<lwe::LWECiphertextType>(inputs[0].getType())) {
       op.emitError()
           << "expected scalar to insert to be of type RLWE ciphertext"
           << inputs[0].getType();
@@ -366,10 +343,6 @@ struct SecretToCKKS : public impl::SecretToCKKSBase<SecretToCKKS> {
         SecretGenericOpCipherPlainConversion<arith::SubIOp, ckks::SubPlainOp>,
         SecretGenericOpConversion<arith::AddFOp, ckks::AddOp>,
         SecretGenericOpConversion<arith::AddIOp, ckks::AddOp>,
-        SecretGenericOpConversion<arith::ExtSIOp,
-                                  lwe::ReinterpretApplicationDataOp>,
-        SecretGenericOpConversion<arith::ExtUIOp,
-                                  lwe::ReinterpretApplicationDataOp>,
         SecretGenericOpConversion<arith::MulFOp, ckks::MulOp>,
         SecretGenericOpConversion<arith::MulIOp, ckks::MulOp>,
         SecretGenericOpConversion<arith::SubFOp, ckks::SubOp>,

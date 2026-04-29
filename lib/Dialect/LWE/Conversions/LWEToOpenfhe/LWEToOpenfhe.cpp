@@ -41,16 +41,10 @@ namespace mlir::heir::lwe {
 
 ToOpenfheTypeConverter::ToOpenfheTypeConverter(MLIRContext *ctx) {
   addConversion([](Type type) { return type; });
-  addConversion([ctx](lwe::RLWEPublicKeyType type) -> Type {
+  addConversion([ctx](lwe::LWEPublicKeyType type) -> Type {
     return openfhe::PublicKeyType::get(ctx);
   });
-  addConversion([ctx](lwe::RLWESecretKeyType type) -> Type {
-    return openfhe::PrivateKeyType::get(ctx);
-  });
-  addConversion([ctx](lwe::NewLWEPublicKeyType type) -> Type {
-    return openfhe::PublicKeyType::get(ctx);
-  });
-  addConversion([ctx](lwe::NewLWESecretKeyType type) -> Type {
+  addConversion([ctx](lwe::LWESecretKeyType type) -> Type {
     return openfhe::PrivateKeyType::get(ctx);
   });
 }
@@ -263,12 +257,9 @@ struct ConvertEncodeOp : public OpConversionPattern<lwe::RLWEEncodeOp> {
       }
     }
 
-    lwe::NewLWEPlaintextType plaintextType = lwe::NewLWEPlaintextType::get(
-        op.getContext(),
-        lwe::ApplicationDataAttr::get(adaptor.getInput().getType(),
-                                      lwe::NoOverflowAttr::get(getContext())),
-        lwe::PlaintextSpaceAttr::get(getContext(), op.getRing(),
-                                     op.getEncoding()));
+    lwe::LWEPlaintextType plaintextType = lwe::LWEPlaintextType::get(
+        op.getContext(), lwe::PlaintextSpaceAttr::get(
+                             getContext(), op.getRing(), op.getEncoding()));
 
     return llvm::TypeSwitch<Attribute, LogicalResult>(op.getEncoding())
         .Case<lwe::InverseCanonicalEncodingAttr>([&](auto encoding) {
@@ -393,7 +384,7 @@ struct LWEToOpenfhe : public impl::LWEToOpenfheBase<LWEToOpenfhe> {
     target.addIllegalDialect<lwe::LWEDialect>();
     target.addIllegalDialect<orion::OrionDialect>();
     // We can keep the following ops, which the emitter can handle directly
-    target.addLegalOp<lwe::ReinterpretApplicationDataOp, lwe::RLWEDecodeOp>();
+    target.addLegalOp<lwe::RLWEDecodeOp>();
 
     RewritePatternSet patterns(context);
     addStructuralConversionPatterns(typeConverter, patterns, target);

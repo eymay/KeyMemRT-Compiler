@@ -23,8 +23,7 @@ struct BGVToLWE : public impl::BGVToLWEBase<BGVToLWE> {
 
     RewritePatternSet patterns(context);
     patterns.add<Convert<AddOp, lwe::RAddOp>, Convert<SubOp, lwe::RSubOp>,
-                 Convert<NegateOp, lwe::RNegateOp>, Convert<MulOp, lwe::RMulOp>,
-                 lwe::ConvertExtract<ExtractOp, MulPlainOp, RotateColumnsOp> >(
+                 Convert<NegateOp, lwe::RNegateOp>, Convert<MulOp, lwe::RMulOp> >(
         context);
     walkAndApplyPatterns(module, std::move(patterns));
   }

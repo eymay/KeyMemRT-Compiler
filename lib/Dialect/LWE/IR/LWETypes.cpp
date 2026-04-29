@@ -10,9 +10,9 @@ namespace mlir {
 namespace heir {
 namespace lwe {
 
-LogicalResult NewLWECiphertextType::verify(
+LogicalResult LWECiphertextType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    mlir::heir::lwe::ApplicationDataAttr, mlir::heir::lwe::PlaintextSpaceAttr,
+    mlir::heir::lwe::PlaintextSpaceAttr,
     mlir::heir::lwe::CiphertextSpaceAttr ciphertextSpace,
     mlir::heir::lwe::KeyAttr keyAttr,
     mlir::heir::lwe::ModulusChainAttr modulusChain) {

@@ -17,9 +17,9 @@
 
 #ciphertext_space_L0 = #lwe.ciphertext_space<ring = #ring_rns_L0_1_x32768, encryption_type = lsb>
 
-!pt = !lwe.new_lwe_plaintext<application_data = <message_type = f16>, plaintext_space = #plaintext_space>
+!pt = !lwe.lwe_plaintext<plaintext_space = #plaintext_space>
 !cc = !openfhe.crypto_context
-!ct = !lwe.new_lwe_ciphertext<application_data = <message_type = f16>, plaintext_space = #plaintext_space, ciphertext_space = #ciphertext_space_L0, key = #key, modulus_chain = #modulus_chain_L5_C0>
+!ct = !lwe.lwe_ciphertext<plaintext_space = #plaintext_space, ciphertext_space = #ciphertext_space_L0, key = #key, modulus_chain = #modulus_chain_L5_C0>
 !rk16 = !kmrt.rot_key<rotation_index = 16>
 
 // Test that rotation key 16 is loaded once before bootstrap,

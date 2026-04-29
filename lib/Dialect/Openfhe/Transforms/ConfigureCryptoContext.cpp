@@ -418,7 +418,7 @@ LogicalResult generateGenFunc(func::FuncOp op, const std::string &genFuncName,
   // for CKKS, plainMod is 0
   int64_t plainMod = 0;
   for (auto arg : op.getArguments()) {
-    if (auto argType = dyn_cast<lwe::NewLWECiphertextType>(
+    if (auto argType = dyn_cast<lwe::LWECiphertextType>(
             getElementTypeOrSelf(arg.getType()))) {
       if (auto modArithType = dyn_cast<mod_arith::ModArithType>(
               argType.getPlaintextSpace().getRing().getCoefficientType())) {
@@ -514,7 +514,7 @@ LogicalResult convertFunc(func::FuncOp op, int levelBudgetEncode,
   // get mulDepth from function argument ciphertext type
   int64_t mulDepth = 0;
   for (auto arg : op.getArguments()) {
-    if (auto argType = dyn_cast<lwe::NewLWECiphertextType>(
+    if (auto argType = dyn_cast<lwe::LWECiphertextType>(
             getElementTypeOrSelf(arg.getType()))) {
       if (auto rnsType = dyn_cast<rns::RNSType>(
               argType.getCiphertextSpace().getRing().getCoefficientType())) {
@@ -766,7 +766,7 @@ struct ConfigureCryptoContext
     /// Compute muldepth from multiply aspects...
     // get mulDepth from function argument ciphertext type
     for (auto arg : op.getArguments()) {
-      if (auto argType = dyn_cast<lwe::NewLWECiphertextType>(
+      if (auto argType = dyn_cast<lwe::LWECiphertextType>(
               getElementTypeOrSelf(arg.getType()))) {
         if (auto rnsType = dyn_cast<rns::RNSType>(
                 argType.getCiphertextSpace().getRing().getCoefficientType())) {
@@ -798,7 +798,7 @@ struct ConfigureCryptoContext
     // get plaintext modulus from function argument ciphertext type
     // for CKKS, plainMod is 0
     for (auto arg : op.getArguments()) {
-      if (auto argType = dyn_cast<lwe::NewLWECiphertextType>(
+      if (auto argType = dyn_cast<lwe::LWECiphertextType>(
               getElementTypeOrSelf(arg.getType()))) {
         if (auto modArithType = dyn_cast<mod_arith::ModArithType>(
                 argType.getPlaintextSpace().getRing().getCoefficientType())) {

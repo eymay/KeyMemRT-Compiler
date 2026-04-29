@@ -25,42 +25,12 @@ namespace lwe {
 
 LogicalResult RMulOp::verify() { return lwe::verifyMulOp(this); }
 
-LogicalResult TrivialEncryptOp::verify() {
-  auto paramsAttr = this->getParamsAttr();
-  auto outParamsAttr = this->getOutput().getType().getLweParams();
-
-  if (paramsAttr != outParamsAttr) {
-    return this->emitOpError()
-           << "lwe_params attr must match on the op and "
-              "the output type, but found op attr "
-           << paramsAttr << " and output type attr " << outParamsAttr;
-  }
-
-  return success();
-}
-
-LogicalResult ReinterpretApplicationDataOp::verify() {
-  auto inputType = getInput().getType();
-  auto outputType = getOutput().getType();
-  if (inputType.getPlaintextSpace() != outputType.getPlaintextSpace() ||
-      inputType.getCiphertextSpace() != outputType.getCiphertextSpace() ||
-      inputType.getKey() != outputType.getKey() ||
-      inputType.getModulusChain() != outputType.getModulusChain()) {
-    return emitOpError()
-           << "the only allowed difference in the input and output are in the "
-              "application_data field, but found input type "
-           << inputType << " and output type " << outputType;
-  }
-
-  return success();
-}
-
 // Verification for RLWE_EncryptOp
 LogicalResult RLWEEncryptOp::verify() {
   Type keyType = getKey().getType();
   auto keyRing =
       llvm::TypeSwitch<Type, mlir::heir::polynomial::RingAttr>(keyType)
-          .Case<lwe::NewLWEPublicKeyType, lwe::NewLWESecretKeyType>(
+          .Case<lwe::LWEPublicKeyType, lwe::LWESecretKeyType>(
               [](auto key) { return key.getRing(); })
           .Default([](Type) {
             llvm_unreachable("impossible by type constraints");
@@ -85,18 +55,6 @@ LogicalResult verifyEncodingAndTypeMatch(mlir::Type type,
 
   // Verification conditions for each encoding we have:
 
-  if (isa<BitFieldEncodingAttr>(encoding)) {
-    // Bit field encodings only work on (scalar/individual) integer
-    return success(type.isInteger());
-  }
-
-  if (isa<UnspecifiedBitFieldEncodingAttr>(encoding)) {
-    // same as BitFieldEncoding
-    return success(type.isInteger());
-  }
-
-  // New LWE Encoding Attr
-
   if (isa<FullCRTPackingEncodingAttr>(encoding)) {
     // also supports lists of integers and scalars via replication
     return success(getElementTypeOrSelf(type).isInteger());
@@ -113,10 +71,6 @@ LogicalResult verifyEncodingAndTypeMatch(mlir::Type type,
   encoding.dump();
   assert(false && "Encoding not handled in encode/decode verifier.");
   return failure();
-}
-
-LogicalResult EncodeOp::verify() {
-  return verifyEncodingAndTypeMatch(getInput().getType(), getEncoding());
 }
 
 LogicalResult RLWEEncodeOp::verify() {

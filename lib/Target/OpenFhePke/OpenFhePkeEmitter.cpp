@@ -273,7 +273,7 @@ LogicalResult OpenFhePkeEmitter::translate(Operation &op) {
           .Case<memref::AllocaOp, memref::LoadOp, memref::StoreOp>(
               [&](auto op) { return printOperation(op); })
           // LWE ops
-          .Case<lwe::RLWEDecodeOp, lwe::ReinterpretApplicationDataOp>(
+          .Case<lwe::RLWEDecodeOp>(
               [&](auto op) { return printOperation(op); })
           // KMRT ops
           .Case<kmrt::LoadKeyOp, kmrt::UseKeyOp, kmrt::AssumeLoadedOp,
@@ -1082,8 +1082,7 @@ void OpenFhePkeEmitter::emitAutoAssignPrefix(Value result) {
   // assign prefix.
   if (!mutableValues.contains(result)) {
     // Check if this is a ciphertext type that might need to be mutable
-    if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType,
-            lwe::NewLWEPlaintextType, lwe::LWEPlaintextType>(
+    if (isa<lwe::LWECiphertextType, lwe::LWEPlaintextType>(
             result.getType())) {
       // For ciphertext types, use auto instead of const auto& to allow in-place
       // operations
@@ -1788,8 +1787,7 @@ LogicalResult OpenFhePkeEmitter::printOperation(tensor::EmptyOp op) {
 
 LogicalResult OpenFhePkeEmitter::printOperation(tensor::ExtractOp op) {
   // const auto& v1 = in[0, 1];
-  if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(
-          op.getResult().getType())) {
+  if (isa<lwe::LWECiphertextType>(op.getResult().getType())) {
     emitAutoAssignPrefix(op.getResult());
   } else {
     if (failed(emitTypedAssignPrefix(op.getResult(), op.getLoc(), true)))
@@ -2057,13 +2055,6 @@ LogicalResult OpenFhePkeEmitter::printOperation(memref::StoreOp op) {
 
   os << variableNames->getNameForValue(indices[0])
      << "] = " << variableNames->getNameForValue(op.getValue()) << ";\n";
-  return success();
-}
-
-LogicalResult OpenFhePkeEmitter::printOperation(
-    lwe::ReinterpretApplicationDataOp op) {
-  emitAutoAssignPrefix(op.getResult());
-  os << variableNames->getNameForValue(op.getInput()) << ";\n";
   return success();
 }
 

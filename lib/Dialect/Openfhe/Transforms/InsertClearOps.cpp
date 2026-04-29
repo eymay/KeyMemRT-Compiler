@@ -20,11 +20,11 @@ namespace openfhe {
 namespace {
 
 bool isCiphertextType(Type type) {
-  return isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(type);
+  return isa<lwe::LWECiphertextType>(type);
 }
 
 bool isPlaintextType(Type type) {
-  return isa<lwe::NewLWEPlaintextType, lwe::LWEPlaintextType>(type);
+  return isa<lwe::LWEPlaintextType>(type);
 }
 
 // Check if a value is defined inside an affine or scf for loop

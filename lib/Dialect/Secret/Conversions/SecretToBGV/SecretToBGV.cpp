@@ -129,10 +129,8 @@ class SecretToBGVTypeConverter
     auto encryptionType =
         isBFV ? lwe::LweEncryptionType::msb : lwe::LweEncryptionType::lsb;
 
-    return lwe::NewLWECiphertextType::get(
+    return lwe::LWECiphertextType::get(
         ctx,
-        lwe::ApplicationDataAttr::get(ctx, type.getValueType(),
-                                      lwe::NoOverflowAttr::get(ctx)),
         lwe::PlaintextSpaceAttr::get(
             ctx, plaintextRing,
             lwe::FullCRTPackingEncodingAttr::get(ctx, scale)),
@@ -260,10 +258,6 @@ struct SecretToBGV : public impl::SecretToBGVBase<SecretToBGV> {
         SecretGenericOpConversion<arith::AddIOp, bgv::AddOp>,
         SecretGenericOpConversion<arith::SubIOp, bgv::SubOp>,
         SecretGenericOpConversion<arith::MulIOp, bgv::MulOp>,
-        SecretGenericOpConversion<arith::ExtUIOp,
-                                  lwe::ReinterpretApplicationDataOp>,
-        SecretGenericOpConversion<arith::ExtSIOp,
-                                  lwe::ReinterpretApplicationDataOp>,
         SecretGenericOpRelinearizeConversion<bgv::RelinearizeOp>,
         SecretGenericOpModulusSwitchConversion<bgv::ModulusSwitchOp>,
         SecretGenericOpConversion<tensor::ExtractOp, bgv::ExtractOp>,

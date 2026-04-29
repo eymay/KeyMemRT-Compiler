@@ -232,14 +232,14 @@ struct ConvertAddPlainToInPlace : public OpRewritePattern<AddPlainOp> {
     Value ciphertext, plaintext;
 
     // Check LHS first
-    if (isa<lwe::NewLWECiphertextType>(op.getLhs().getType()) &&
-        isa<lwe::NewLWEPlaintextType>(op.getRhs().getType())) {
+    if (isa<lwe::LWECiphertextType>(op.getLhs().getType()) &&
+        isa<lwe::LWEPlaintextType>(op.getRhs().getType())) {
       ciphertext = op.getLhs();
       plaintext = op.getRhs();
     }
     // Check RHS
-    else if (isa<lwe::NewLWEPlaintextType>(op.getLhs().getType()) &&
-             isa<lwe::NewLWECiphertextType>(op.getRhs().getType())) {
+    else if (isa<lwe::LWEPlaintextType>(op.getLhs().getType()) &&
+             isa<lwe::LWECiphertextType>(op.getRhs().getType())) {
       ciphertext = op.getRhs();
       plaintext = op.getLhs();
     } else {
@@ -281,15 +281,15 @@ struct ConvertSubPlainToInPlace : public OpRewritePattern<SubPlainOp> {
     bool ciphertextIsLhs = false;
 
     // Check if LHS is ciphertext and RHS is plaintext
-    if (isa<lwe::NewLWECiphertextType>(op.getLhs().getType()) &&
-        isa<lwe::NewLWEPlaintextType>(op.getRhs().getType())) {
+    if (isa<lwe::LWECiphertextType>(op.getLhs().getType()) &&
+        isa<lwe::LWEPlaintextType>(op.getRhs().getType())) {
       ciphertext = op.getLhs();
       plaintext = op.getRhs();
       ciphertextIsLhs = true;
     }
     // Check if LHS is plaintext and RHS is ciphertext
-    else if (isa<lwe::NewLWEPlaintextType>(op.getLhs().getType()) &&
-             isa<lwe::NewLWECiphertextType>(op.getRhs().getType())) {
+    else if (isa<lwe::LWEPlaintextType>(op.getLhs().getType()) &&
+             isa<lwe::LWECiphertextType>(op.getRhs().getType())) {
       ciphertext = op.getRhs();
       plaintext = op.getLhs();
       ciphertextIsLhs = false;

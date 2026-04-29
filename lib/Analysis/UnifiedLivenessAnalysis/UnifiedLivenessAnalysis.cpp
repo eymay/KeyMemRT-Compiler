@@ -314,7 +314,7 @@ UnifiedLivenessResults runUnifiedLivenessAnalysis(Operation *op) {
 
     // Add new ciphertext results
     for (Value result : walkOp->getResults()) {
-      if (isa<lwe::NewLWECiphertextType, lwe::LWECiphertextType>(
+      if (isa<lwe::LWECiphertextType>(
               result.getType())) {
         liveCiphertexts.insert(result);
       }

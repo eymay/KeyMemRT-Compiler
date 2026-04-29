@@ -39,7 +39,7 @@ def Orion_LinearTransformOp : Orion_Op<"linear_transform"> {
   }];
 
   let arguments = (ins
-    NewLWECiphertext:$input,
+    LWECiphertext:$input,
     AnyRankedTensor:$weights,
 
     // Block matrix coordinates
@@ -67,7 +67,7 @@ def Orion_LinearTransformOp : Orion_Op<"linear_transform"> {
   );
 
   let results = (outs
-    NewLWECiphertext:$output
+    LWECiphertext:$output
   );
 
   let assemblyFormat = "$input `,` $weights attr-dict `:` `(` type($input) `,` qualified(type($weights)) `)` `->` type($output)" ;
@@ -91,19 +91,19 @@ def Orion_ChebyshevOp : Orion_Op<"chebyshev"> {
         coefficients = [1.0, 0.0, -0.33333, 0.0, 0.2],
         domain_start = -1.0,
         domain_end = 1.0
-    } : (!lwe.new_lwe_ciphertext) -> !lwe.new_lwe_ciphertext
+    } : (!lwe.lwe_ciphertext) -> !lwe.lwe_ciphertext
     ```
   }];
 
   let arguments = (ins
-    NewLWECiphertext:$input,
+    LWECiphertext:$input,
     F64ArrayAttr:$coefficients,
     DefaultValuedAttr<F64Attr, "-1.0">:$domain_start,
     DefaultValuedAttr<F64Attr, "1.0">:$domain_end
   );
 
   let results = (outs
-    NewLWECiphertext:$output
+    LWECiphertext:$output
   );
 
   let assemblyFormat = [{

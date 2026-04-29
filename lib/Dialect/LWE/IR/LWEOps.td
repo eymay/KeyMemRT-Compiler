@@ -20,20 +20,6 @@ class HasEncoding<
     "the first arg's type's encoding matches the given encoding",
     CPred<
       comparator # "(" #
-      "::llvm::cast<lwe::" # ty # ">($" # encodingHolder # ".getType()).getEncoding(), " #
-      "$" # encoding # ")"
-    >
-  >;
-
-class NewHasEncoding<
-  string encodingHolder,
-  string encoding,
-  string ty,
-  string comparator = "std::equal_to<>()"
-> : PredOpTrait<
-    "the first arg's type's encoding matches the given encoding",
-    CPred<
-      comparator # "(" #
       "::llvm::cast<lwe::" # ty # ">($" # encodingHolder # ".getType()).getPlaintextSpace().getEncoding(), " #
       "$" # encoding # ")"
     >
@@ -41,21 +27,6 @@ class NewHasEncoding<
 
 
 class EncodingsMatch<
-  string encodingHolder1,
-  string ty1,
-  string encodingHolder2,
-  string ty2,
-  string comparator = "std::equal_to<>()"
-> : PredOpTrait<
-    "the first arg's type's encoding matches the given encoding",
-    CPred<
-      comparator # "(" #
-      "::llvm::cast<lwe::" # ty1 # ">($" # encodingHolder1 # ".getType()).getEncoding(), " #
-      "::llvm::cast<lwe::" # ty2 # ">($" # encodingHolder2 # ".getType()).getEncoding())"
-    >
-  >;
-
-class NewEncodingsMatch<
   string encodingHolder1,
   string ty1,
   string encodingHolder2,
@@ -94,62 +65,9 @@ class LWE_Op<string mnemonic, list<Trait> traits = []> :
 
 class LWE_BinOp<string mnemonic, list<Trait> traits = []> :
         LWE_Op<mnemonic,  traits # [ElementwiseMappable]> {
-  let arguments = (ins NewLWECiphertext:$lhs, NewLWECiphertext:$rhs);
-  let results = (outs NewLWECiphertext:$output);
-  let assemblyFormat = "operands attr-dict `:` type($output)";
-}
-
-def LWE_EncodeOp : LWE_Op<"encode", [HasEncoding<"output", "encoding", "LWEPlaintextType">]> {
-  let summary = "Encode an integer to yield an LWE plaintext";
-  let description = [{
-    Encode an integer to yield an LWE plaintext.
-
-    This op uses a an encoding attribute to encode the bits of the integer into
-    an LWE plaintext value that can then be encrypted.
-
-    Examples:
-
-    ```
-    %Y = lwe.encode %value {encoding = #enc}: i1 to !lwe.lwe_plaintext<encoding = #enc>
-    ```
-  }];
-
-  let arguments = (ins
-    SignlessIntegerOrFloatLike:$input,
-    AnyLWEEncodingAttr:$encoding
-  );
-
-  let results = (outs LWEPlaintext:$output);
-  let assemblyFormat = "$input attr-dict `:` qualified(type($input)) `to` qualified(type($output))";
-
-  // Verify that the input type and the encoding are compatible.
-  let hasVerifier = 1;
-}
-
-def LWE_TrivialEncryptOp: LWE_Op<"trivial_encrypt", [
-    EncodingsMatch<"input", "LWEPlaintextType", "output", "LWECiphertextType">]> {
-  let summary = "Create a trivial encryption of a plaintext.";
-
-  let arguments = (ins
-    LWEPlaintext:$input,
-    OptionalAttr<LWE_LWEParams>:$params
-  );
-
-  let results = (outs LWECiphertext:$output);
-
-  let assemblyFormat = [{
-    operands attr-dict `:`  qualified(type(operands)) `to` qualified(type(results))
-  }];
-
-  // Verify that the LWE params matches the output ciphertext LWE params and
-  // that the encodings of the input and output match.
-  let hasVerifier = 1;
-}
-
-def LWE_AddOp : LWE_BinOp<"add", [SameOperandsAndResultType,Commutative]> {
   let arguments = (ins LWECiphertext:$lhs, LWECiphertext:$rhs);
   let results = (outs LWECiphertext:$output);
-  let summary = "Add two LWE ciphertexts";
+  let assemblyFormat = "operands attr-dict `:` type($output)";
 }
 
 def LWE_RAddOp : LWE_BinOp<"radd", [SameOperandsAndResultRings, Commutative]> {
@@ -176,19 +94,12 @@ def LWE_RMulOp : LWE_BinOp<"rmul", [SameOperandsAndResultRings, Commutative]> {
 
 def LWE_RNegateOp : LWE_Op<"rnegate", [SameOperandsAndResultType, ElementwiseMappable]> {
   let summary = "Negate a RLWE ciphertexts";
-  let arguments = (ins NewLWECiphertextLike:$input);
-  let results = (outs NewLWECiphertextLike:$output);
+  let arguments = (ins LWECiphertextLike:$input);
+  let results = (outs LWECiphertextLike:$output);
   let assemblyFormat = "operands attr-dict `:` type($output)";
 }
 
-def LWE_MulScalarOp : LWE_Op<"mul_scalar", [ElementwiseMappable,
-    AllTypesMatch<["ciphertext", "output"]>]> {
-  let summary = "Multiply an LWE ciphertext by a scalar";
-  let arguments = (ins LWECiphertextLike:$ciphertext, AnyInteger:$scalar);
-  let results = (outs LWECiphertextLike:$output);
-}
-
-def LWE_RLWEEncodeOp : LWE_Op<"rlwe_encode", [NewHasEncoding<"output", "encoding", "NewLWEPlaintextType">]> {
+def LWE_RLWEEncodeOp : LWE_Op<"rlwe_encode", [HasEncoding<"output", "encoding", "LWEPlaintextType">]> {
   let summary = "Encode an integer to yield an RLWE plaintext";
   let description = [{
     Encode an integer to yield an RLWE plaintext.
@@ -211,18 +122,18 @@ def LWE_RLWEEncodeOp : LWE_Op<"rlwe_encode", [NewHasEncoding<"output", "encoding
     Polynomial_RingAttr:$ring
   );
 
-  let results = (outs NewLWEPlaintext:$output);
+  let results = (outs LWEPlaintext:$output);
   let assemblyFormat = "$input attr-dict `:` qualified(type($input)) `->` qualified(type($output))";
 
   // Verify that the input type and the encoding are compatible.
   let hasVerifier = true;
 }
 
-def LWE_RLWEDecodeOp : LWE_Op<"rlwe_decode", [NewHasEncoding<"input", "encoding", "NewLWEPlaintextType">]> {
+def LWE_RLWEDecodeOp : LWE_Op<"rlwe_decode", [HasEncoding<"input", "encoding", "LWEPlaintextType">]> {
   let summary = "Decode an RLWE plaintext to an underlying type";
 
   let arguments = (ins
-    NewLWEPlaintext:$input,
+    LWEPlaintext:$input,
     AnyPlaintextEncodingAttr:$encoding,
     Polynomial_RingAttr:$ring
   );
@@ -235,51 +146,33 @@ def LWE_RLWEDecodeOp : LWE_Op<"rlwe_decode", [NewHasEncoding<"input", "encoding"
 }
 
 def LWE_RLWEEncryptOp : LWE_Op<"rlwe_encrypt", [
-    NewEncodingsMatch<"input", "NewLWEPlaintextType", "output", "NewLWECiphertextType">]> {
+    EncodingsMatch<"input", "LWEPlaintextType", "output", "LWECiphertextType">]> {
   let summary = "Encrypt an RLWE plaintext to a RLWE ciphertext";
   let description = [{
     Encrypt an RLWE plaintext to yield a RLWE ciphertext.
   }];
 
   let arguments = (ins
-    NewLWEPlaintext:$input,
-    NewLWESecretOrPublicKey:$key
+    LWEPlaintext:$input,
+    LWESecretOrPublicKey:$key
   );
-  let results = (outs NewLWECiphertext:$output);
+  let results = (outs LWECiphertext:$output);
   let hasVerifier = 1;
 }
 
 def LWE_RLWEDecryptOp : LWE_Op<"rlwe_decrypt", [
-    NewEncodingsMatch<"input", "NewLWECiphertextType", "output", "NewLWEPlaintextType">,
-    KeyAndCiphertextMatch<"secret_key", "NewLWESecretKeyType", "input", "NewLWECiphertextType">]> {
+    EncodingsMatch<"input", "LWECiphertextType", "output", "LWEPlaintextType">,
+    KeyAndCiphertextMatch<"secret_key", "LWESecretKeyType", "input", "LWECiphertextType">]> {
   let summary = "Decrypt an RLWE ciphertext to a RLWE plaintext";
   let description = [{
     Decrypt an RLWE ciphertext to yield a RLWE plaintext
   }];
 
   let arguments = (ins
-    NewLWECiphertext:$input,
-    NewLWESecretKey:$secret_key
+    LWECiphertext:$input,
+    LWESecretKey:$secret_key
   );
-  let results = (outs NewLWEPlaintext:$output);
-}
-
-def ReinterpretApplicationDataOp : LWE_Op<"reinterpret_application_data", []> {
-  let summary = "A placeholder cast from one ciphertext type to another";
-  let description = [{
-    The `cast` op is thus used to translate application data (e.g., `message_type`)
-    between ciphertexts in particular situations, such as when the bitwidth of the
-    message type changes, but this change is not observed in the plaintext space,
-    or when lowering to an API that does not keep track of types.
-  }];
-
-  let arguments = (ins NewLWECiphertext:$input);
-  let results = (outs NewLWECiphertext:$output);
-  let assemblyFormat = [{
-    $input attr-dict `:` qualified(type($input)) `to` qualified(type($output))
-  }];
-
-  let hasVerifier = 1;
+  let results = (outs LWEPlaintext:$output);
 }
 
 def LWE_LinearTransformOp : LWE_Op<"linear_transform"> {
@@ -298,14 +191,14 @@ def LWE_LinearTransformOp : LWE_Op<"linear_transform"> {
   }];
 
   let arguments = (ins
-    NewLWECiphertext:$input,
-    NewLWEPlaintext:$weights,
+    LWECiphertext:$input,
+    LWEPlaintext:$weights,
     I32Attr:$diagonal_count,
     I32Attr:$slots
   );
 
   let results = (outs
-    NewLWECiphertext:$result
+    LWECiphertext:$result
   );
 
   let assemblyFormat = [{

@@ -26,7 +26,7 @@ namespace lwe {
 
 FailureOr<Type> getPrivateKeyType(func::FuncOp op) {
   const auto *type = llvm::find_if(op.getArgumentTypes(), [](Type type) {
-    return mlir::isa<NewLWECiphertextType>(type);
+    return mlir::isa<LWECiphertextType>(type);
   });
 
   if (type == op.getArgumentTypes().end()) {
@@ -34,9 +34,9 @@ FailureOr<Type> getPrivateKeyType(func::FuncOp op) {
         "Function does not have an argument of LWECiphertextType");
   }
 
-  auto lweCiphertextType = cast<NewLWECiphertextType>(*type);
+  auto lweCiphertextType = cast<LWECiphertextType>(*type);
 
-  auto lwePrivateKeyType = NewLWESecretKeyType::get(
+  auto lwePrivateKeyType = LWESecretKeyType::get(
       op.getContext(), lweCiphertextType.getKey(),
       lweCiphertextType.getCiphertextSpace().getRing());
   return lwePrivateKeyType;
@@ -44,7 +44,7 @@ FailureOr<Type> getPrivateKeyType(func::FuncOp op) {
 
 func::FuncOp getOrCreateExternalDebugFunc(
     ModuleOp module, Type lwePrivateKeyType,
-    NewLWECiphertextType lweCiphertextType,
+    LWECiphertextType lweCiphertextType,
     const DenseMap<Type, int> &typeToInt) {
   std::string funcName =
       "__heir_debug_" + std::to_string(typeToInt.at(lweCiphertextType));
@@ -79,7 +79,7 @@ LogicalResult insertExternalCall(func::FuncOp op, Type lwePrivateKeyType) {
   auto insertCall = [&](Value value) {
     Type valueType = value.getType();
     // NOTE: this won't work for shaped input like tensor<2x!lwe.ciphertext>
-    if (auto lweCiphertextType = dyn_cast<NewLWECiphertextType>(valueType)) {
+    if (auto lweCiphertextType = dyn_cast<LWECiphertextType>(valueType)) {
       // update typeToInt
       if (!typeToInt.count(valueType)) {
         typeToInt[valueType] = typeToInt.size();
@@ -103,16 +103,10 @@ LogicalResult insertExternalCall(func::FuncOp op, Type lwePrivateKeyType) {
         }
       }
 
-      auto messageType =
-          lweCiphertextType.getApplicationData().getMessageType();
+      // application_data was removed from LWECiphertextType; without it we
+      // can't recover the original tensor shape, so default the message size
+      // to 1.
       auto messageSize = 1;
-      if (auto tensorMessageType = dyn_cast<TensorType>(messageType)) {
-        auto shape = tensorMessageType.getShape();
-        if (shape.size() != 1) {
-          op->emitWarning("Only support 1D tensor for message type");
-        }
-        messageSize = shape[0];
-      }
       attrs.push_back(b.getNamedAttr(
           "message.size", b.getStringAttr(std::to_string(messageSize))));
 

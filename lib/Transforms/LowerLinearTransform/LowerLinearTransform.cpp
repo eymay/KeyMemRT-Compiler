@@ -26,13 +26,13 @@ namespace {
 
 // Helper to extract scaling factor from types
 static int64_t getScalingFactor(Type type) {
-  if (auto ctType = dyn_cast<lwe::NewLWECiphertextType>(type)) {
+  if (auto ctType = dyn_cast<lwe::LWECiphertextType>(type)) {
     auto ptSpace = ctType.getPlaintextSpace();
     if (auto encoding = dyn_cast<lwe::InverseCanonicalEncodingAttr>(
             ptSpace.getEncoding())) {
       return encoding.getScalingFactor();
     }
-  } else if (auto ptType = dyn_cast<lwe::NewLWEPlaintextType>(type)) {
+  } else if (auto ptType = dyn_cast<lwe::LWEPlaintextType>(type)) {
     auto ptSpace = ptType.getPlaintextSpace();
     if (auto encoding = dyn_cast<lwe::InverseCanonicalEncodingAttr>(
             ptSpace.getEncoding())) {
@@ -55,8 +55,13 @@ Value getWeightTensor(PatternRewriter &rewriter, Location loc, Value weights) {
   if (!definingOp) {
     llvm::dbgs() << "  Weights is a block argument, decoding\n";
     if (auto weightsType =
-            dyn_cast<lwe::NewLWEPlaintextType>(weights.getType())) {
-      auto tensorType = weightsType.getApplicationData().getMessageType();
+            dyn_cast<lwe::LWEPlaintextType>(weights.getType())) {
+      // application_data was removed; derive the cleartext tensor shape
+      // from the plaintext ring's polynomial modulus degree (slot count).
+      auto ring = weightsType.getPlaintextSpace().getRing();
+      auto degree = ring.getPolynomialModulus().getPolynomial().getDegree();
+      auto tensorType =
+          RankedTensorType::get({(int64_t)degree}, rewriter.getF64Type());
       Value decodedWeights =
           rewriter.create<lwe::RLWEDecodeOp>(loc, tensorType, weights);
       return decodedWeights;
@@ -78,8 +83,11 @@ Value getWeightTensor(PatternRewriter &rewriter, Location loc, Value weights) {
   // Fallback: try to decode if it's a plaintext type
   llvm::dbgs() << "  Unrecognized defining op type, attempting decode\n";
   if (auto weightsType =
-          dyn_cast<lwe::NewLWEPlaintextType>(weights.getType())) {
-    auto tensorType = weightsType.getApplicationData().getMessageType();
+          dyn_cast<lwe::LWEPlaintextType>(weights.getType())) {
+    auto ring = weightsType.getPlaintextSpace().getRing();
+    auto degree = ring.getPolynomialModulus().getPolynomial().getDegree();
+    auto tensorType =
+        RankedTensorType::get({(int64_t)degree}, rewriter.getF64Type());
     Value decodedWeights =
         rewriter.create<lwe::RLWEDecodeOp>(loc, tensorType, weights);
     return decodedWeights;
@@ -170,12 +178,8 @@ class LowerLinearTransformPattern
     auto ptSpace =
         lwe::PlaintextSpaceAttr::get(rewriter.getContext(), ring, encoding);
 
-    auto noOverflowAttr = lwe::NoOverflowAttr::get(rewriter.getContext());
-    auto appData =
-        lwe::ApplicationDataAttr::get(diagonalTensorType, noOverflowAttr);
-
     auto ptType =
-        lwe::NewLWEPlaintextType::get(rewriter.getContext(), appData, ptSpace);
+        lwe::LWEPlaintextType::get(rewriter.getContext(), ptSpace);
 
     Value encodedDiagonal = rewriter.create<openfhe::MakeCKKSPackedPlaintextOp>(
         loc, ptType, cryptoContext, diagonalTensor);
@@ -349,11 +353,8 @@ class LowerLinearTransformPattern
           auto ptSpace = lwe::PlaintextSpaceAttr::get(builder.getContext(),
                                                       ring, encoding);
 
-          auto noOverflowAttr = lwe::NoOverflowAttr::get(rewriter.getContext());
-          auto appData =
-              lwe::ApplicationDataAttr::get(diagonalTensorType, noOverflowAttr);
-          auto ptType = lwe::NewLWEPlaintextType::get(rewriter.getContext(),
-                                                      appData, ptSpace);
+          auto ptType =
+              lwe::LWEPlaintextType::get(rewriter.getContext(), ptSpace);
 
           Value encodedDiagonal =
               builder.create<openfhe::MakeCKKSPackedPlaintextOp>(
