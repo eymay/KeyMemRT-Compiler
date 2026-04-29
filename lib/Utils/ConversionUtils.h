@@ -2,7 +2,6 @@
 #define LIB_UTILS_CONVERSIONUTILS_H_
 
 #include "lib/Dialect/LWE/IR/LWEDialect.h"
-#include "lib/Dialect/TfheRust/IR/TfheRustTypes.h"
 #include "llvm/include/llvm/Support/Casting.h"          // from @llvm-project
 #include "llvm/include/llvm/Support/ErrorHandling.h"    // from @llvm-project
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -138,68 +137,6 @@ bool containsLweOrDialect(func::FuncOp func) {
     return WalkResult::advance();
   });
   return walkResult.wasInterrupted();
-}
-
-inline Type encrytpedUIntTypeFromWidth(MLIRContext *ctx, int width) {
-  // Only supporting unsigned types because the LWE dialect does not have a
-  // notion of signedness.
-  switch (width) {
-    case 1:
-      return tfhe_rust::EncryptedBoolType::get(ctx);
-    case 2:
-      return tfhe_rust::EncryptedUInt2Type::get(ctx);
-    case 3:
-      return tfhe_rust::EncryptedUInt3Type::get(ctx);
-    case 4:
-      return tfhe_rust::EncryptedUInt4Type::get(ctx);
-    case 8:
-      return tfhe_rust::EncryptedUInt8Type::get(ctx);
-    case 10:
-      return tfhe_rust::EncryptedUInt10Type::get(ctx);
-    case 12:
-      return tfhe_rust::EncryptedUInt12Type::get(ctx);
-    case 14:
-      return tfhe_rust::EncryptedUInt14Type::get(ctx);
-    case 16:
-      return tfhe_rust::EncryptedUInt16Type::get(ctx);
-    case 32:
-      return tfhe_rust::EncryptedUInt32Type::get(ctx);
-    case 64:
-      return tfhe_rust::EncryptedUInt64Type::get(ctx);
-    case 128:
-      return tfhe_rust::EncryptedUInt128Type::get(ctx);
-    case 256:
-      return tfhe_rust::EncryptedUInt256Type::get(ctx);
-    default:
-      llvm_unreachable("Unsupported bitwidth");
-  }
-}
-
-inline Type encrytpedIntTypeFromWidth(MLIRContext *ctx, int width) {
-  // Only supporting unsigned types because the LWE dialect does not have a
-  // notion of signedness.
-  switch (width) {
-    case 1:
-      return tfhe_rust::EncryptedBoolType::get(ctx);
-    case 2:
-      return tfhe_rust::EncryptedInt2Type::get(ctx);
-    case 4:
-      return tfhe_rust::EncryptedInt4Type::get(ctx);
-    case 8:
-      return tfhe_rust::EncryptedInt8Type::get(ctx);
-    case 16:
-      return tfhe_rust::EncryptedInt16Type::get(ctx);
-    case 32:
-      return tfhe_rust::EncryptedInt32Type::get(ctx);
-    case 64:
-      return tfhe_rust::EncryptedInt64Type::get(ctx);
-    case 128:
-      return tfhe_rust::EncryptedInt128Type::get(ctx);
-    case 256:
-      return tfhe_rust::EncryptedInt256Type::get(ctx);
-    default:
-      llvm_unreachable("Unsupported bitwidth");
-  }
 }
 
 }  // namespace heir

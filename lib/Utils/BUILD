@@ -57,7 +57,6 @@ cc_library(
     hdrs = ["ConversionUtils.h"],
     deps = [
         "@heir//lib/Dialect/LWE/IR:Dialect",
-        "@heir//lib/Dialect/TfheRust/IR:Dialect",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:ArithDialect",

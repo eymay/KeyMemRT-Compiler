@@ -18,7 +18,8 @@ def SymbolicBSGSDecomposition : Pass<"symbolic-bsgs-decomposition", "func::FuncO
     "mlir::heir::kmrt::KMRTDialect",
     "mlir::heir::openfhe::OpenfheDialect",
     "mlir::affine::AffineDialect",
-    "mlir::arith::ArithDialect"
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
   ];
 }
 
