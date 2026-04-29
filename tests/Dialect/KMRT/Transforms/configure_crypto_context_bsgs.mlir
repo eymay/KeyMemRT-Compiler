@@ -1,4 +1,4 @@
-// RUN: heir-opt --openfhe-configure-crypto-context=entry-function=linear_transform %s | FileCheck %s
+// RUN: keymemrt-opt --openfhe-configure-crypto-context=entry-function=linear_transform %s | FileCheck %s
 
 // This test uses the output of BSGS decomposition directly to verify that
 // ConfigureCryptoContext can find all rotation indices from dynamic rotation keys.

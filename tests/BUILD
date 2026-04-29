@@ -12,8 +12,8 @@ filegroup(
     testonly = True,
     data = [
         ":lit.cfg.py",
-        "@heir//tools:heir-opt",
-        "@heir//tools:heir-translate",
+        "@heir//tools:keymemrt-opt",
+        "@heir//tools:keymemrt-translate",
         "@llvm-project//llvm:FileCheck",
         "@llvm-project//llvm:count",
         "@llvm-project//llvm:lit",

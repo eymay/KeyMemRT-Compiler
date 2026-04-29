@@ -1,4 +1,4 @@
-// RUN: heir-opt --openfhe-fast-rotation-precompute %s | FileCheck %s
+// RUN: keymemrt-opt --openfhe-fast-rotation-precompute %s | FileCheck %s
 
 !Z1032955396097_i64 = !mod_arith.int<1032955396097 : i64>
 !Z1095233372161_i64 = !mod_arith.int<1095233372161 : i64>

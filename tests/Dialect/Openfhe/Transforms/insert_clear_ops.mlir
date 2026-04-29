@@ -1,4 +1,4 @@
-// RUN: heir-opt --openfhe-insert-clear-ops %s | FileCheck %s
+// RUN: keymemrt-opt --openfhe-insert-clear-ops %s | FileCheck %s
 
 !Z1095233372161_i64_ = !mod_arith.int<1095233372161 : i64>
 !Z65537_i64_ = !mod_arith.int<65537 : i64>

@@ -1,4 +1,4 @@
-// RUN: heir-opt --bootstrap-rotation-analysis --kmrt-merge-rotation-keys %s | FileCheck %s
+// RUN: keymemrt-opt --bootstrap-rotation-analysis --kmrt-merge-rotation-keys %s | FileCheck %s
 
 !Z1095233372161_i64 = !mod_arith.int<1095233372161 : i64>
 !Z65537_i64 = !mod_arith.int<65537 : i64>

@@ -1,4 +1,4 @@
-// RUN: heir-translate %s --emit-openfhe-pke --split-input-file | FileCheck %s
+// RUN: keymemrt-translate %s --emit-openfhe-pke --split-input-file | FileCheck %s
 
 #ring_Z65537_i64_1_x32_ = #polynomial.ring<coefficientType = !mod_arith.int<65537 : i64>, polynomialModulus = <1 + x**32>>
 !rns_L0_ = !rns.rns<!mod_arith.int<1095233372161 : i64>>
