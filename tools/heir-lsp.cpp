@@ -9,6 +9,7 @@
 #include "lib/Dialect/Mgmt/IR/MgmtDialect.h"
 #include "lib/Dialect/ModArith/IR/ModArithDialect.h"
 #include "lib/Dialect/Openfhe/IR/OpenfheDialect.h"
+#include "lib/Dialect/Orion/IR/OrionDialect.h"
 #include "lib/Dialect/Polynomial/IR/PolynomialDialect.h"
 #include "lib/Dialect/RNS/IR/RNSDialect.h"
 #include "lib/Dialect/RNS/IR/RNSTypeInterfaces.h"
@@ -50,6 +51,7 @@ int main(int argc, char **argv) {
   registry.insert<mgmt::MgmtDialect>();
   registry.insert<random::RandomDialect>();
   registry.insert<openfhe::OpenfheDialect>();
+  registry.insert<orion::OrionDialect>();
   registry.insert<rns::RNSDialect>();
   registry.insert<secret::SecretDialect>();
   registry.insert<tensor_ext::TensorExtDialect>();

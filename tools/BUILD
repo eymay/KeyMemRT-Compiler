@@ -76,6 +76,7 @@ cc_binary(
         "@heir//lib/Dialect/Openfhe/Transforms",
         "@heir//lib/Dialect/Openfhe/Transforms:ConfigureCryptoContext",
         "@heir//lib/Dialect/Openfhe/Transforms:CountAddAndKeySwitch",
+        "@heir//lib/Dialect/Orion/IR:Dialect",
         "@heir//lib/Dialect/Polynomial/Conversions/PolynomialToModArith",
         "@heir//lib/Dialect/Polynomial/IR:Dialect",
         "@heir//lib/Dialect/Polynomial/Transforms",
@@ -235,6 +236,7 @@ cc_binary(
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
         "@heir//lib/Dialect/Openfhe/Transforms",
         "@heir//lib/Dialect/Openfhe/Transforms:ConfigureCryptoContext",
+        "@heir//lib/Dialect/Orion/IR:Dialect",
         # Supporting dialects
         "@heir//lib/Dialect/ModArith/IR:Dialect",
         "@heir//lib/Dialect/Polynomial/IR:Dialect",
@@ -296,6 +298,7 @@ cc_binary(
         "@heir//lib/Dialect/Mgmt/IR:Dialect",
         "@heir//lib/Dialect/ModArith/IR:Dialect",
         "@heir//lib/Dialect/Openfhe/IR:Dialect",
+        "@heir//lib/Dialect/Orion/IR:Dialect",
         "@heir//lib/Dialect/Polynomial/IR:Dialect",
         "@heir//lib/Dialect/RNS/IR:Dialect",
         "@heir//lib/Dialect/RNS/IR:RNSTypeInterfaces",
