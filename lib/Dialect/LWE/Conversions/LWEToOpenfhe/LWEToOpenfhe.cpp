@@ -8,6 +8,8 @@
 #include "lib/Dialect/CKKS/IR/CKKSDialect.h"
 #include "lib/Dialect/CKKS/IR/CKKSOps.h"
 #include "lib/Dialect/LWE/Conversions/LWEToOpenfhe/LWEToOpenfhe.h"
+#include "lib/Dialect/Orion/IR/OrionDialect.h"
+#include "lib/Dialect/Orion/IR/OrionOps.h"
 #include "lib/Dialect/LWE/IR/LWEAttributes.h"
 #include "lib/Dialect/LWE/IR/LWEDialect.h"
 #include "lib/Dialect/LWE/IR/LWEOps.h"
@@ -102,21 +104,21 @@ struct AddCryptoContextArg : public OpConversionPattern<func::FuncOp> {
 };
 
 struct ConvertLinearTransformOp
-    : public OpConversionPattern<ckks::LinearTransformOp> {
+    : public OpConversionPattern<orion::LinearTransformOp> {
   ConvertLinearTransformOp(mlir::MLIRContext *context)
-      : OpConversionPattern<ckks::LinearTransformOp>(context) {}
+      : OpConversionPattern<orion::LinearTransformOp>(context) {}
 
-  using OpConversionPattern<ckks::LinearTransformOp>::OpConversionPattern;
+  using OpConversionPattern<orion::LinearTransformOp>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(
-      ckks::LinearTransformOp op, ckks::LinearTransformOp::Adaptor adaptor,
+      orion::LinearTransformOp op, orion::LinearTransformOp::Adaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
     FailureOr<Value> result = getContextualCryptoContext(op.getOperation());
     if (failed(result)) return result;
 
     Value cryptoContext = result.value();
 
-    // Convert directly from CKKS to OpenFHE - no intermediate LWE op
+    // Convert directly from Orion to OpenFHE - no intermediate LWE op
     rewriter.replaceOpWithNewOp<openfhe::LinearTransformOp>(
         op, op.getResult().getType(), cryptoContext, adaptor.getInput(),
         adaptor.getWeights(), op.getDiagonalCountAttr(), op.getSlotsAttr());
@@ -319,14 +321,14 @@ struct ConvertBootstrapOp : public OpConversionPattern<ckks::BootstrapOp> {
   }
 };
 
-struct ConvertChebyshevOp : public OpConversionPattern<ckks::ChebyshevOp> {
+struct ConvertChebyshevOp : public OpConversionPattern<orion::ChebyshevOp> {
   ConvertChebyshevOp(mlir::MLIRContext *context)
-      : OpConversionPattern<ckks::ChebyshevOp>(context) {}
+      : OpConversionPattern<orion::ChebyshevOp>(context) {}
 
-  using OpConversionPattern<ckks::ChebyshevOp>::OpConversionPattern;
+  using OpConversionPattern<orion::ChebyshevOp>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(
-      ckks::ChebyshevOp op, ckks::ChebyshevOp::Adaptor adaptor,
+      orion::ChebyshevOp op, orion::ChebyshevOp::Adaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
     FailureOr<Value> result = getContextualCryptoContext(op.getOperation());
     if (failed(result)) return result;
@@ -389,6 +391,7 @@ struct LWEToOpenfhe : public impl::LWEToOpenfheBase<LWEToOpenfhe> {
     target.addIllegalDialect<bgv::BGVDialect>();
     target.addIllegalDialect<ckks::CKKSDialect>();
     target.addIllegalDialect<lwe::LWEDialect>();
+    target.addIllegalDialect<orion::OrionDialect>();
     // We can keep the following ops, which the emitter can handle directly
     target.addLegalOp<lwe::ReinterpretApplicationDataOp, lwe::RLWEDecodeOp>();
 

@@ -69,7 +69,7 @@ module {
     // CHECK: %[[weights:.*]] = arith.constant dense<1.000000e+00> : tensor<4xf64>
     %weights = arith.constant dense<1.0> : tensor<4xf64>
     // CHECK: %[[v7:.*]] = openfhe.linear_transform [[C]], %[[x7:.*]], %[[weights]] {diagonal_count = 4 : i32, slots = 1024 : i32}
-    %result = ckks.linear_transform %x, %weights {diagonal_count = 4 : i32, slots = 1024 : i32} : (!ct, tensor<4xf64>) -> !ct
+    %result = orion.linear_transform %x, %weights {diagonal_count = 4 : i32, slots = 1024 : i32} : (!ct, tensor<4xf64>) -> !ct
     return %result : !ct
   }
 }
