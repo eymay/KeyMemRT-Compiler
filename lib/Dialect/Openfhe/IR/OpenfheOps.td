@@ -274,10 +274,15 @@ def MulConstOp : Openfhe_Op<"mul_const",[
     AllTypesMatch<["ciphertext", "output"]>
 ]> {
   let summary = "OpenFHE mul operation of a ciphertext and a constant.";
+  let description = [{
+    The constant is either an `i64` (BGV/BFV integer scalar multiplication)
+    or an `f64` (CKKS real-valued scalar multiplication). The emitter selects
+    the appropriate `EvalMult` overload based on the operand type.
+  }];
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
     LWECiphertext:$ciphertext,
-    I64:$constant
+    AnyTypeOf<[I64, F64]>:$constant
   );
   let results = (outs LWECiphertext:$output);
 }

@@ -293,6 +293,30 @@ struct ConvertEncodeOp : public OpConversionPattern<lwe::RLWEEncodeOp> {
   }
 };
 
+struct ConvertMulScalarOp : public OpConversionPattern<ckks::MulScalarOp> {
+  ConvertMulScalarOp(mlir::MLIRContext *context)
+      : OpConversionPattern<ckks::MulScalarOp>(context) {}
+
+  using OpConversionPattern<ckks::MulScalarOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      ckks::MulScalarOp op, ckks::MulScalarOp::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    FailureOr<Value> result = getContextualCryptoContext(op.getOperation());
+    if (failed(result)) return result;
+
+    Value cryptoContext = result.value();
+    // Materialize the f64 scalar attribute as an arith.constant so it can be
+    // passed as the `$constant` operand to openfhe.mul_const.
+    Value scalarVal = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), op.getScalarAttr());
+    rewriter.replaceOpWithNewOp<openfhe::MulConstOp>(
+        op, op.getOutput().getType(), cryptoContext, adaptor.getInput(),
+        scalarVal);
+    return success();
+  }
+};
+
 struct ConvertBootstrapOp : public OpConversionPattern<ckks::BootstrapOp> {
   ConvertBootstrapOp(mlir::MLIRContext *context)
       : OpConversionPattern<ckks::BootstrapOp>(context) {}
@@ -471,7 +495,9 @@ struct LWEToOpenfhe : public impl::LWEToOpenfheBase<LWEToOpenfhe> {
         lwe::ConvertLevelReduceOp<bgv::LevelReduceOp>,
         lwe::ConvertLevelReduceOp<ckks::LevelReduceOp>,
         // Bootstrap (CKKS only)
-        ConvertBootstrapOp, ConvertChebyshevOp, ConvertLinearTransformOp
+        ConvertBootstrapOp, ConvertChebyshevOp, ConvertLinearTransformOp,
+        // Scalar multiplication
+        ConvertMulScalarOp
         // End of Pattern List
         >(typeConverter, context);
 

@@ -92,6 +92,26 @@ def CKKS_MulPlainOp : CKKS_CiphertextPlaintextOp<"mul_plain", [ Commutative]> {
   let hasCanonicalizer = 1;
 }
 
+def CKKS_MulScalarOp : CKKS_Op<"mul_scalar", [AllTypesMatch<["input", "output"]>]> {
+  let summary = "Multiplication of a ciphertext by an f64 scalar constant.";
+
+  let description = [{
+    Multiplies the ciphertext by a real-valued scalar without consuming a
+    multiplicative level.
+  }];
+
+  let arguments = (ins
+    LWECiphertext:$input,
+    F64Attr:$scalar
+  );
+
+  let results = (outs
+    LWECiphertext:$output
+  );
+
+  let assemblyFormat = "operands attr-dict `:` qualified(type($input)) `->` qualified(type($output))" ;
+}
+
 def CKKS_RotateOp : CKKS_Op<"rotate", [AllTypesMatch<["input", "output"]>]> {
   let summary = "Rotate the coefficients of the ciphertext using a Galois automorphism.";
 
