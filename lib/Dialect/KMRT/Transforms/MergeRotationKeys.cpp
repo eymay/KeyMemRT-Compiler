@@ -896,7 +896,15 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     llvm::errs() << "      Successfully extended affine.if condition\n";
   }
 
-  // Create standalone merge for loops without existing affine.if guards
+  // Create standalone merge for loops without existing affine.if guards.
+  //
+  // For each LoadKeyOp inside the loop we extract its AffineKeySet via
+  // AffineSetAnalysis. This handles both:
+  //   - direct IV loads (baby-step style):     load_key(iv)         -> {iv}
+  //   - giant-step loads (e.g. BSGS outer):    load_key(iv * step)  -> {iv*step}
+  // In each case, we ask analyzeMergeOpportunity which IV value would make the
+  // dynamic load equal the preloop-resident key index. That IV value (not the
+  // raw key index) is what we encode into the affine.if guard.
   void createStandaloneMerge(
       affine::AffineForOp loop,
       SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>> &preloopKeys,
@@ -904,76 +912,75 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     llvm::errs()
         << "    createStandaloneMerge: checking for standalone opportunities\n";
 
-    // Find LoadKeyOp operations in the loop and collect all preloop keys for
-    // each
-    DenseMap<LoadKeyOp, SmallVector<int64_t>> loadToPreloopKeys;
+    // For each LoadKeyOp in the loop, collect a list of
+    // (preloopKeyIndex, mergeIVValue) pairs that say: "when this loop's IV
+    // equals mergeIVValue, the load produces the same key as preloopKeyIndex".
+    DenseMap<LoadKeyOp, SmallVector<std::pair<int64_t, int64_t>>>
+        loadToPreloopKeys;
+
+    Value loopIV = loop.getInductionVar();
 
     loop.walk([&](LoadKeyOp loadOp) {
-      // Check if this load's index value uses the loop IV
-      Value indexValue = loadOp.getIndex();
+      // Use AffineSetAnalysis to characterize the load's key index.
+      auto maybeSet = kmrt::extractAffineKeySet(loadOp.getOperation());
+      if (!maybeSet) return;
 
-      // Check if it's a direct use of IV (with or without index_cast)
-      Value loopIV = loop.getInductionVar();
+      // For each preloop key, ask if there exists an IV value at which the
+      // load's affine key set hits this preloop key index.
+      for (auto &[preloopKeyIndex, preloadOp, clearOp] : preloopKeys) {
+        auto mergeOpp = kmrt::analyzeMergeOpportunity(preloopKeyIndex, loop);
+        if (!mergeOpp || !mergeOpp->isValid()) continue;
 
-      bool usesLoopIV = false;
-
-      // Direct use of loop IV
-      if (indexValue == loopIV) {
-        usesLoopIV = true;
-      }
-      // Try to trace through index_cast
-      else if (auto castOp = indexValue.getDefiningOp<arith::IndexCastOp>()) {
-        if (castOp.getIn() == loopIV) {
-          usesLoopIV = true;
-        }
-      }
-
-      if (usesLoopIV) {
-        // This load uses the loop IV directly - collect ALL preloop keys
-        for (auto &[preloopKeyIndex, preloadOp, clearOp] : preloopKeys) {
-          loadToPreloopKeys[loadOp].push_back(preloopKeyIndex);
-          llvm::errs() << "      Found load to wrap for key " << preloopKeyIndex
+        // Find the merge condition whose IV is *this* loop's IV. (A nested
+        // loop body could have multiple IVs in scope; we only act on loads
+        // governed by the outer loop we are transforming.)
+        for (auto &[ivVal, ivConditionValue] : mergeOpp->mergeConditions) {
+          if (ivVal != loopIV) continue;
+          loadToPreloopKeys[loadOp].push_back(
+              {preloopKeyIndex, ivConditionValue});
+          llvm::errs() << "      Found load to wrap for key "
+                       << preloopKeyIndex << " at iv == " << ivConditionValue
                        << "\n";
-        }
-      }
-    });
-
-    // Wrap each LoadKeyOp once with all its preloop keys
-    SmallVector<std::pair<Value, int64_t>> wrappedResults;
-    for (auto &[loadOp, keyIndices] : loadToPreloopKeys) {
-      Value newResult = wrapLoadWithAffineIfMultipleKeys(loadOp, keyIndices,
-                                                         loop, preloopKeys);
-      if (newResult) {
-        for (int64_t keyIndex : keyIndices) {
-          wrappedResults.push_back({newResult, keyIndex});
-        }
-      }
-    }
-
-    // Wrap ClearKeyOp operations
-    SmallVector<std::pair<ClearKeyOp, SmallVector<int64_t>>> clearsToWrap;
-    loop.walk([&](ClearKeyOp clearOp) {
-      Value key = clearOp.getRotKey();
-
-      // Check if this clear corresponds to a wrapped load's new result
-      for (auto &[wrappedResult, preloopKeyIndex] : wrappedResults) {
-        if (key == wrappedResult) {
-          SmallVector<int64_t> keysToSkip;
-          keysToSkip.push_back(preloopKeyIndex);
-          clearsToWrap.push_back({clearOp, keysToSkip});
-          llvm::errs() << "      Found clear to wrap, skipping key "
-                       << preloopKeyIndex << "\n";
           break;
         }
       }
     });
 
-    // Wrap each ClearKeyOp with affine.if
-    for (auto &[clearOp, keysToSkip] : clearsToWrap) {
-      wrapClearWithAffineIf(clearOp, keysToSkip, loop);
+    // Wrap each LoadKeyOp once with all its (key, iv-condition) pairs.
+    SmallVector<std::pair<Value, int64_t>> wrappedResults;
+    for (auto &[loadOp, keyAndConds] : loadToPreloopKeys) {
+      Value newResult = wrapLoadWithAffineIfMultipleKeys(loadOp, keyAndConds,
+                                                         loop, preloopKeys);
+      if (newResult) {
+        for (auto &[keyIndex, ivCond] : keyAndConds) {
+          wrappedResults.push_back({newResult, ivCond});
+        }
+      }
     }
 
-    // Remove preloop clears
+    // Wrap ClearKeyOp operations: skip the clear when iv == ivCondition for
+    // any wrapped load whose result this clear consumes.
+    SmallVector<std::pair<ClearKeyOp, SmallVector<int64_t>>> clearsToWrap;
+    loop.walk([&](ClearKeyOp clearOp) {
+      Value key = clearOp.getRotKey();
+      for (auto &[wrappedResult, ivCond] : wrappedResults) {
+        if (key == wrappedResult) {
+          SmallVector<int64_t> condsToSkip;
+          condsToSkip.push_back(ivCond);
+          clearsToWrap.push_back({clearOp, condsToSkip});
+          llvm::errs() << "      Found clear to wrap, skipping when iv == "
+                       << ivCond << "\n";
+          break;
+        }
+      }
+    });
+
+    for (auto &[clearOp, condsToSkip] : clearsToWrap) {
+      wrapClearWithAffineIf(clearOp, condsToSkip, loop);
+    }
+
+    // Remove preloop clears that are now redundant — the loop's affine.if
+    // reuses the preloaded key.
     for (auto &[preloopKeyIndex, preloadOp, clearOp] : preloopKeys) {
       if (clearOp && clearOp.getOperation()->getBlock()) {
         llvm::errs() << "      Removing preloop clear for key "
@@ -983,9 +990,15 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     }
   }
 
-  // Wrap a LoadKeyOp with affine.if for preloop merge (single key)
+  // Wrap a LoadKeyOp with affine.if for preloop merge (single key).
+  //
+  // `ivConditionValue` is the value the loop IV must take so that the load
+  // produces the same key as preloopKeyIndex. For the direct-IV case
+  // (load_key(iv)) ivConditionValue == preloopKeyIndex; for the giant-step
+  // case (load_key(iv*step)) ivConditionValue == preloopKeyIndex / step.
   Value wrapLoadWithAffineIf(
-      LoadKeyOp loadOp, int64_t preloopKeyIndex, affine::AffineForOp loop,
+      LoadKeyOp loadOp, int64_t preloopKeyIndex, int64_t ivConditionValue,
+      affine::AffineForOp loop,
       SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>> &preloopKeys) {
     OpBuilder builder(loadOp);
     Location loc = loadOp.getLoc();
@@ -1001,10 +1014,10 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     }
     if (!preloadOp) return nullptr;
 
-    // Create affine.if: if (iv == preloopKeyIndex) { use preloaded } else {
-    // load }
+    // Create affine.if: if (iv == ivConditionValue) { use preloaded }
+    //                   else { load }
     auto dimExpr = builder.getAffineDimExpr(0);
-    auto condExpr = dimExpr - preloopKeyIndex;
+    auto condExpr = dimExpr - ivConditionValue;
     auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
 
     auto ifOp = builder.create<affine::AffineIfOp>(
@@ -1032,20 +1045,22 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     loadOp.erase();
 
     llvm::errs() << "      Wrapped LoadKeyOp with affine.if for key "
-                 << preloopKeyIndex << "\n";
+                 << preloopKeyIndex << " (iv == " << ivConditionValue << ")\n";
 
     return ifOp.getResult(0);
   }
 
-  // Wrap a LoadKeyOp with nested affine.if for multiple preloop keys
+  // Wrap a LoadKeyOp with nested affine.if for multiple preloop keys.
+  // Each entry in keyAndConds is (preloopKeyIndex, ivConditionValue):
+  // the IV value that makes the dynamic load equal that preloop key.
   Value wrapLoadWithAffineIfMultipleKeys(
-      LoadKeyOp loadOp, SmallVector<int64_t> &preloopKeyIndices,
+      LoadKeyOp loadOp, SmallVector<std::pair<int64_t, int64_t>> &keyAndConds,
       affine::AffineForOp loop,
       SmallVector<std::tuple<int64_t, LoadKeyOp, ClearKeyOp>> &preloopKeys) {
     // If only one key, use the simpler single-key version
-    if (preloopKeyIndices.size() == 1) {
-      return wrapLoadWithAffineIf(loadOp, preloopKeyIndices[0], loop,
-                                  preloopKeys);
+    if (keyAndConds.size() == 1) {
+      return wrapLoadWithAffineIf(loadOp, keyAndConds[0].first,
+                                  keyAndConds[0].second, loop, preloopKeys);
     }
 
     OpBuilder builder(loadOp);
@@ -1053,21 +1068,22 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     Value loopIV = loop.getInductionVar();
 
     // Build nested affine.if structure:
-    // if (iv == key[0]) { use key[0] }
-    // else { if (iv == key[1]) { use key[1] }
-    //        else { ... if (iv == key[n]) { use key[n] }
+    // if (iv == cond[0]) { use key[0] }
+    // else { if (iv == cond[1]) { use key[1] }
+    //        else { ... if (iv == cond[n]) { use key[n] }
     //               else { original load } } }
 
     // Helper to recursively build nested ifs
-    std::function<Value(size_t)> buildNestedIf = [&](size_t keyIdx) -> Value {
-      if (keyIdx >= preloopKeyIndices.size()) {
+    std::function<Value(size_t)> buildNestedIf = [&](size_t idx) -> Value {
+      if (idx >= keyAndConds.size()) {
         // Base case: clone the original load
         IRMapping mapping;
         auto clonedLoad = cast<LoadKeyOp>(builder.clone(*loadOp, mapping));
         return clonedLoad.getRotKey();
       }
 
-      int64_t preloopKeyIndex = preloopKeyIndices[keyIdx];
+      int64_t preloopKeyIndex = keyAndConds[idx].first;
+      int64_t ivConditionValue = keyAndConds[idx].second;
 
       // Find the preload operation for this key
       LoadKeyOp preloadOp = nullptr;
@@ -1077,11 +1093,12 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
           break;
         }
       }
-      if (!preloadOp) return buildNestedIf(keyIdx + 1);
+      if (!preloadOp) return buildNestedIf(idx + 1);
 
-      // Create affine.if for this key
+      // Create affine.if for this key (gated on the IV's value, not the key
+      // value).
       auto dimExpr = builder.getAffineDimExpr(0);
-      auto condExpr = dimExpr - preloopKeyIndex;
+      auto condExpr = dimExpr - ivConditionValue;
       auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
 
       auto ifOp = builder.create<affine::AffineIfOp>(
@@ -1090,8 +1107,8 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
 
       // Mark nested affine.if operations (not the outermost one) with nesting
       // level so the emitter can generate unique variable names with suffix
-      if (keyIdx > 0) {
-        ifOp->setAttr("nesting_level", builder.getI64IntegerAttr(keyIdx));
+      if (idx > 0) {
+        ifOp->setAttr("nesting_level", builder.getI64IntegerAttr(idx));
       }
 
       // Then branch: use preloaded key
@@ -1108,13 +1125,14 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
         OpBuilder elseBuilder(ifOp.getElseBlock(),
                               ifOp.getElseBlock()->begin());
         builder.setInsertionPointToStart(ifOp.getElseBlock());
-        Value elseResult = buildNestedIf(keyIdx + 1);
+        Value elseResult = buildNestedIf(idx + 1);
         builder.setInsertionPointToEnd(ifOp.getElseBlock());
         builder.create<affine::AffineYieldOp>(loc, elseResult);
       }
 
       llvm::errs() << "      Wrapped LoadKeyOp with affine.if for key "
-                   << preloopKeyIndex << "\n";
+                   << preloopKeyIndex << " (iv == " << ivConditionValue
+                   << ")\n";
 
       return ifOp.getResult(0);
     };
@@ -1130,21 +1148,24 @@ struct MergeRotationKeys : impl::MergeRotationKeysBase<MergeRotationKeys> {
     return result;
   }
 
-  // Wrap a ClearKeyOp with affine.if to skip certain keys
+  // Wrap a ClearKeyOp with affine.if to skip certain IV values.
+  // Each value in ivConditionsToSkip is a loop-IV value at which the
+  // corresponding load was redirected to a preloaded key (so the clear is
+  // redundant on that iteration).
   void wrapClearWithAffineIf(ClearKeyOp clearOp,
-                             SmallVector<int64_t> &keysToSkip,
+                             SmallVector<int64_t> &ivConditionsToSkip,
                              affine::AffineForOp loop) {
     OpBuilder builder(clearOp);
     Location loc = clearOp.getLoc();
     Value loopIV = loop.getInductionVar();
 
-    // Create nested affine.if for each key to skip
-    // Structure: if (iv == key1) {} else { if (iv == key2) {} else { clear } }
+    // Create nested affine.if for each IV value to skip
+    // Structure: if (iv == c1) {} else { if (iv == c2) {} else { clear } }
 
     Operation *lastOp = clearOp;
-    for (int64_t keyIndex : keysToSkip) {
+    for (int64_t ivCond : ivConditionsToSkip) {
       auto dimExpr = builder.getAffineDimExpr(0);
-      auto condExpr = dimExpr - keyIndex;
+      auto condExpr = dimExpr - ivCond;
       auto condSet = IntegerSet::get(1, 0, {condExpr}, {true});
 
       builder.setInsertionPoint(lastOp);
