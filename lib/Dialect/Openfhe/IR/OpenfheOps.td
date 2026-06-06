@@ -270,8 +270,8 @@ def MulPlainOp : Openfhe_Op<"mul_plain",[
 }
 
 def MulConstOp : Openfhe_Op<"mul_const",[
-    Pure,
-    AllTypesMatch<["ciphertext", "output"]>
+    Pure
+    // AllTypesMatch<["ciphertext", "output"]>  // disabled: types are nominal in KeyMemRT
 ]> {
   let summary = "OpenFHE mul operation of a ciphertext and a constant.";
   let description = [{
@@ -302,8 +302,8 @@ def LevelReduceOp : Openfhe_UnaryTypeSwitchOp<"level_reduce"> {
 }
 
 def RotOp : Openfhe_Op<"rot", [
-  Pure,
-  AllTypesMatch<["ciphertext", "output"]>
+  Pure
+  // AllTypesMatch<["ciphertext", "output"]>  // disabled: types are nominal in KeyMemRT
 ]> {
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
@@ -314,8 +314,8 @@ def RotOp : Openfhe_Op<"rot", [
 }
 
 def AutomorphOp : Openfhe_Op<"automorph", [
-  Pure,
-  AllTypesMatch<["ciphertext", "output"]>
+  Pure
+  // AllTypesMatch<["ciphertext", "output"]>  // disabled: types are nominal in KeyMemRT
 ]> {
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
@@ -326,8 +326,8 @@ def AutomorphOp : Openfhe_Op<"automorph", [
 }
 
 def KeySwitchOp : Openfhe_Op<"key_switch", [
-   Pure,
-   AllTypesMatch<["ciphertext", "output"]>
+   Pure
+   // AllTypesMatch<["ciphertext", "output"]>  // disabled: types are nominal in KeyMemRT
 ]> {
   let arguments = (ins
     Openfhe_CryptoContext:$cryptoContext,
@@ -542,8 +542,8 @@ def DeserializeKeyGlobalOp : Openfhe_Op<"deserialize_key_global"> {
 }
 
 def RotateGlobalOp : Openfhe_Op<"rotate_global", [
-  Pure,
-  AllTypesMatch<["ciphertext", "output"]>
+  Pure
+  // AllTypesMatch<["ciphertext", "output"]>  // disabled: types are nominal in KeyMemRT
 ]> {
   let summary = "Rotate ciphertext using a globally stored evaluation key";
   let description = [{
