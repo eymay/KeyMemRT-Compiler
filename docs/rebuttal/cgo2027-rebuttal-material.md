@@ -182,27 +182,87 @@ Pass: `lib/Dialect/KMRT/Transforms/KeyPrefetching.cpp`; options in
 - BSGS loops need no special casing — they are consumed as generic nested
   affine loops (test: `tests/Dialect/KMRT/Transforms/key_prefetching_bsgs.mlir`).
 
-### 2.4 Runtime side (C2, C3, C4-runtime, C6) — **material gap in this repo**
+### 2.4 Runtime side (C2, C3, C4-runtime, C6) — facts from the runtime repo
 
-The runtime library (`KeyMemRT.hpp`) is **not in this repository**; the
-emitter only calls its API: `enqueueKey(index[,depth])` for prefetch
-(`OpenFhePkeEmitter.cpp:1398-1421`), synchronous `deserializeKey(index)` for
-load (`:1299`), `clearKey` (`:1394`), `serializeAllKeys` /
-`serializeKeysAtLevel` / `clearAllKeys`, and mode/platform switches
-(`KeyMemMode::{IGNORE, IMPERATIVE, PREFETCH}`, `:2302-2467`).
+The runtime lives in the companion repo `eymay/KeyMemRT`
+(`include/KeyMemRT.hpp`, single header, ~1550 lines). The emitter calls its
+API: `enqueueKey(index[,depth])` for prefetch
+(`OpenFhePkeEmitter.cpp:1398-1421`), `deserializeKey(index)` for load
+(`:1299`), `clearKey` (`:1394`), `serializeAllKeys` / `serializeKeysAtLevel`
+/ `clearAllKeys`. Runtime internals (all citations into
+`KeyMemRT/include/KeyMemRT.hpp`):
 
-Consequences for the rebuttal:
-- Answers about the prefetch queue, background thread, memory-limit
-  enforcement, prioritization, and deserialization instrumentation must come
-  from the runtime repo / artifact, not this one. **Action item: pull those
-  facts (and ideally publish the runtime) before writing the rebuttal.**
-- Low-Memory vs Balanced is, compiler-side, a pipeline difference: Balanced =
-  base pipeline + `--kmrt-key-prefetching="runtime-delegated=1"`
-  (`README.md:69-93`); Low-Memory has no prefetching, so disk I/O and
-  computation serialize — which is consistent with the paper's description.
-- There is no timing instrumentation separating deserialization from raw I/O
-  anywhere in `lib/` — reviewer A's Q3 requires a new measurement, not a
-  citation.
+- **Four runtime modes** (`KeyMemMode`, `:54-59`): `IGNORE` (all key ops are
+  no-ops; keys stay resident — the ANT-ACE-like baseline configuration),
+  `IMPERATIVE` (synchronous on-demand deserialize — Low-Memory mode),
+  `PREFETCH` (background deserialization thread + queue — Balanced mode),
+  and `SPECULATIVE` (blocks polling for the key *file* to arrive — models
+  cold-start/network-transfer scenarios; useful against reviewer B's
+  "network costs untouched" point as ongoing work).
+- **One background deserialization thread**, started only in PREFETCH mode
+  (`startPrefetchMode`, `:368-376`; worker loop `deserializationWorker`,
+  `:1358-1483`). FIFO `deserializationQueue` of (rotationIndex, depth) pairs
+  guarded by mutex + condition variable; `enqueueKey` pushes and notifies
+  (`:1327-1356`).
+- **Explicit memory budget**: the prefetcher is capped by a *tower budget*
+  (`prefetchTowerLimit`, CLI flag `--prefetch-sat`, default 250 towers,
+  `:95,:133-136,:1540`). The worker only pops the next queue item if
+  `currentTowerCount + requiredTowers <= prefetchTowerLimit` (`:1383,
+  :1417`); otherwise it sleeps until `clearKey`/`clearAllKeys` frees budget
+  and notifies it (`:960-967, :1198-1212`). So Balanced mode **does bound
+  prefetched-key memory** — the budget is in RNS-tower units, i.e.
+  proportional to bytes, not a naive key count.
+- **Blocking semantics**: if `deserializeKey` finds the key not yet ready in
+  PREFETCH mode, it self-enqueues if missing from the queue and waits on a
+  condition variable, logging the wait time in microseconds (`:563-698`,
+  wait-time log `:597-599, :629-631`). A watchdog detects
+  budget-too-small deadlock (2-minute timeout) and aborts with an actionable
+  "increase --prefetch-sat" message (`:651-689`).
+- **Serialization format**: per-key binary files
+  (`rotation_key_<idx>[_l<depth>].bin`, `:877-886`) written/read with
+  OpenFHE's `SerializeEvalAutomorphismKey` / `DeserializeEvalAutomorphismKey`
+  (`SerType::BINARY`, `:527-528, :838-839`). `clearKey` erases exactly one
+  automorphism key from OpenFHE's key map (`:906-923`).
+- **Key compression** (`KeyCompression.hpp`): before serialization, keys can
+  be compressed to their profile-derived level — dropping Q towers to
+  `multDepth + 2 - level` (`KeyMemRT.hpp:1006-1016`,
+  `KeyCompression.hpp:67-99`) — shrinking both on-disk size and
+  deserialization work; restored via `RestoreDynamicQSize` after load
+  (`:848-861`). This is the "kc" benchmark configuration in the Justfile.
+- **Per-network budget values** used in evaluation (`KeyMemRT/Justfile:227-239`):
+  `--prefetch-sat` 600 (MLP, LoLa), 2000 (ResNet-1, LeNet), 2500
+  (ResNet-8/10/20/32/44/56), 3500 (AlexNet, ResNet-18/34), 4500
+  (ResNet-50, VGG, YOLO). These answer "how is the user-provided limit
+  selected" concretely, and sweeping this knob is exactly the
+  memory–latency curve reviewer C asks for.
+- Honest caveat: `calculateTowerCount` is currently a stub returning a flat
+  32 towers per key (`:414`) — the budget bounds (#prefetched keys × 32)
+  tower units rather than the exact per-depth tower count
+  (`getActualTowerCount`, `:1514-1518`, exists but is not used in the
+  accounting). Worth fixing before the revision.
+
+Mode mapping across the two repos: Low-Memory = compiler pipeline without
+prefetching + runtime `--key-mode imperative`; Balanced = pipeline with
+`--kmrt-key-prefetching="runtime-delegated=1"` + runtime
+`--key-mode prefetching --prefetch-sat N`; the ANT-ACE-style all-resident
+baseline = `--key-mode ignore` with single-file bulk key deserialization
+(`deserializeAllKeysFromSingleFile`, `:1093-1128`; Justfile `run-*-server`
+targets).
+
+**Measurement infrastructure that already exists** (runtime repo):
+- PREFETCH wait times per key are logged in µs (`KeyMemRT.hpp:597-599`) —
+  directly usable to report how much latency prefetching hides (C-Q3).
+- `ResourceMonitor.hpp` samples every 10 ms: process RSS/VMS/heap/peak/PSS
+  (`/proc/self/status`, `smaps_rollup`; `:271-314`) and, with advanced stats,
+  **system cached/buffers GB, page-ins/outs, and major faults**
+  (`:359-425`) — i.e. the page-cache accounting reviewer E says is missing
+  is already instrumented; the rebuttal can report cached-memory curves.
+- Named event markers with per-thread start/end timestamps
+  (`mark_event_start/end`, `:79-106`) exported to CSV — the hook needed for
+  the deserialize-vs-I/O split (A-Q3); currently used for serialization
+  events in `drivers/client_driver.cpp:259-322`, needs to be added around
+  the `DeserializeEvalAutomorphismKey` call to separate file-read from
+  deserialization time.
 
 ### 2.5 Bootstrap removal and its correctness (C7)
 
@@ -255,47 +315,70 @@ Consequences for the rebuttal:
 
 ### 2.7 Facts for the fairness question (C2)
 
-In this repo there is no OpenMP usage and no thread creation — repo-wide
-grep over `lib/` finds no `#pragma omp`, `std::thread`, `std::async`, or
-`condition_variable`. The single extra thread is the runtime's deserializing
-thread (referenced in comments, `KeyPrefetching.cpp:319`). Rebuttal
-material: the prefetch thread does no FHE computation — it only performs
-I/O + deserialization that the baseline performs on the critical path; the
-requested apples-to-apples check (give the baseline one more OpenMP thread)
-is a cheap experiment worth running, since OpenFHE's OpenMP scaling on these
-kernels is known to be sub-linear.
+The evaluation harness (`KeyMemRT/Justfile`) runs **every** configuration —
+baseline (`ignore`), Low-Memory (`imperative`), key-compression, Fhelipe,
+and Balanced (`prefetching`) — with `OMP_NUM_THREADS=4`
+(`Justfile:123-147, :200, :208, :216, :241, :251`). So the OpenFHE baseline
+already gets 4 OpenMP compute threads; reviewer A's premise that the
+baseline "appears to run without the same threading advantage" is factually
+answerable: compute-thread counts are equal across all configurations.
+Balanced mode adds exactly **one** extra thread (the deserialization worker,
+`KeyMemRT.hpp:374`), which performs no FHE computation — only the disk I/O +
+deserialization that the baseline pays on the critical path at startup.
+The clean remaining check (run the baseline with `OMP_NUM_THREADS=5`) is a
+cheap experiment worth adding, since OpenFHE's OpenMP scaling on these
+kernels is sub-linear.
 
 ---
 
-## Part 3 — What must come from experiments or the runtime repo (cannot be cited from here)
+### 2.8 Orion (E-Q1)
+
+The runtime repo's own flow **uses Orion as a frontend**: benchmarks are
+built via the Orion FHE compiler plus `orion_heir_translator`
+(`KeyMemRT/README.md`, Dependencies step 3;
+`benchmarks/networks/*.py` are Orion network definitions). This
+strengthens the comparison story: KeyMemRT consumes Orion-generated
+programs, so a head-to-head against Orion's hand-written coarse-grained key
+loading is natural — same frontend, hand-crafted vs. compiler-automated
+per-key management — and the qualitative distinction (Orion loads
+coarse-grained groups, hand-placed per model; KeyMemRT derives per-key
+lifetimes automatically and prefetches under an explicit budget) can be
+stated from direct experience with the Orion flow.
+
+## Part 3 — What must come from experiments (cannot be cited from either repo)
 
 1. **Ablation matrix (C1)** — per-pass on/off runs: merge pass, prefetching,
    BSGS, bootstrap removal, clear-ops; plus the Low-Memory-beats-ANT-ACE
    explanation (likely candidates: allocator/page pressure from 50+ GB
    resident keys, avoided key-generation-time setup, clear_ct reducing
    ciphertext footprint — needs measurement, not speculation).
-2. **Key movement microbenchmark (C3)** — per-key timing split: disk read vs
-   deserialization vs context insertion; with page cache dropped
+2. **Key movement microbenchmark (C3, A-Q3)** — per-key timing split: disk
+   read vs deserialization vs context insertion. Most instrumentation
+   already exists (PREFETCH wait-time µs logs, `ResourceMonitor` event
+   markers and cached/major-fault sampling — see 2.4); what's missing is an
+   event marker around `DeserializeEvalAutomorphismKey` separating file read
+   from decode. Run with page cache dropped
    (`echo 3 > /proc/sys/vm/drop_caches`) and with `cgroup` memory caps to
    kill the 512 GB page-cache objection (E). Report storage medium and
-   bandwidth.
-3. **Constrained-memory demonstration (D, C6)** — run ResNet variants under
-   cgroup limits where ANT-ACE OOMs and KeyMemRT completes; sweep the
-   prefetch-key limit to trace the memory–latency curve (answers "only two
-   modes").
-4. **Threading fairness run (C2/A-Q2)** — baseline with OpenMP thread(s)
-   equal to KeyMemRT's total thread count; KeyMemRT with prefetching disabled
-   but liveness management kept.
-5. **Runtime policy description (A, C)** — from the runtime source: queue
-   discipline, memory-limit check on enqueue, blocking `deserializeKey`
-   semantics when a prefetch is in flight, prefetched-key limit default.
-6. **Compile-time overhead (E-Q2)** — wall-clock of the KMRT passes on
+   bandwidth. Also report the key-compression ("kc") effect on per-key load
+   time — compressed keys shrink both file size and decode work.
+3. **Constrained-memory demonstration (D, C6, C-Q5)** — run ResNet variants
+   under cgroup limits where the all-resident baseline OOMs and KeyMemRT
+   completes; sweep `--prefetch-sat` (the knob already exists, per-network
+   values 600–4500 towers) to trace the memory–latency curve. This directly
+   answers "characterize the trade-off under different memory budgets".
+4. **Threading fairness run (C2/A-Q2)** — all configs already run with
+   `OMP_NUM_THREADS=4` (see 2.7); add a baseline run at
+   `OMP_NUM_THREADS=5` to match KeyMemRT's total thread count, and a
+   Balanced run with the worker disabled (imperative mode) to isolate
+   prefetch-overlap benefit from key-liveness benefit.
+5. **Compile-time overhead (E-Q2)** — wall-clock of the KMRT passes on
    ResNet-50 IR; also report inserted load/clear/prefetch op counts per
    benchmark (cheap: `keymemrt-opt` + `grep -c`).
-7. **Orion comparison (E-Q1)** — at minimum a qualitative comparison
-   (hand-written, coarse-grained, model-specific vs automated, per-key,
-   compiler-derived), ideally one shared benchmark.
-8. **Numerical accuracy (D)** — output precision (log2 error) with and
+6. **Orion comparison (E-Q1)** — Orion is already the frontend (see 2.8);
+   run at least one shared benchmark against Orion's own hand-crafted key
+   loading for a quantitative point.
+7. **Numerical accuracy (D)** — output precision (log2 error) with and
    without bootstrap removal on each benchmark.
 
 ## Part 4 — Suggested rebuttal skeleton (per reviewer question)
@@ -303,11 +386,16 @@ kernels is known to be sub-linear.
 - **A-Q1 (Low-Memory faster than ANT-ACE)**: acknowledge; give measured
   explanation from ablation item 1; note ANT-ACE holds ~50 GB of keys
   resident, which taxes the allocator/TLB even in all-RAM mode.
-- **A-Q2 (thread fairness)**: cite 2.7 facts + run item 4.
-- **A-Q3 (deserialization cost)**: run item 2; report per-key ms split.
+- **A-Q2 (thread fairness)**: cite 2.7 facts (all configs run with
+  `OMP_NUM_THREADS=4`; the worker thread does no FHE compute) + run item 4.
+- **A-Q3 (deserialization cost)**: run item 2; report per-key ms split;
+  cite existing µs wait-time logging (2.4).
 - **A-Q4 (prefetch distance)**: cite 2.3 — cost-model threshold (default 50
   weighted ops), software-pipelined next-iteration prefetch in loops,
   verification pass guaranteeing coverage.
+- **A detailed feedback (runtime prefetch policy)**: cite 2.4 — FIFO queue +
+  single worker, tower-budget admission control (`--prefetch-sat`),
+  blocking load with self-enqueue fallback, deadlock watchdog.
 - **C-Q1/D-Q1 (merge policy, loops)**: cite 2.1/2.2 — DFA + per-category
   windows (10 FHE-ops sequential, 20/50/100 for pre/post-loop) + affine-set
   analysis for loops; commit to making thresholds pass options in revision.
@@ -316,8 +404,20 @@ kernels is known to be sub-linear.
 - **C-Q3 (movement overhead / caching)**: run item 2.
 - **C-Q4/D (ablation, bootstrap correctness)**: run items 1 and 8; cite 2.5
   for the mechanism and the integral-to-key-memory argument.
-- **C-Q5 (budget sweep)**: run item 3.
-- **E-Q1 (Orion)**: item 7. **E-Q2 (compile time)**: item 6.
+- **C-Q5 (budget sweep)**: cite 2.4 — `--prefetch-sat` is an explicit
+  tower-unit memory budget with per-network values already tuned
+  (600–4500); run item 3 for the curve.
+- **C (why runtime info at all)**: the compiler knows key-use order but not
+  the machine's I/O speed or concurrent memory pressure; runtime-delegated
+  mode keeps the compiler-derived order while the tower-budget admission
+  control adapts pacing to the deployment machine — a static schedule would
+  bake in one machine's latencies. Cite 2.3 (runtime-delegated) + 2.4.
+- **E-Q1 (Orion)**: cite 2.8 (Orion is the frontend) + run item 6.
+  **E-Q2 (compile time)**: item 5.
+- **E (page-cache / memory accounting)**: cite 2.4 — `ResourceMonitor`
+  already samples system cached/buffers, page-in/out, and major faults
+  alongside process RSS/PSS; report those curves + run item 2's
+  drop-caches/cgroup runs.
 - **B (framing)**: no code needed — soften "unlock" claim, add Fhelipe
   points to Fig. 1, cap the trend line at the 2·sqrt(N) key-count ceiling,
   and scope claims to RAM-residency (concede generation/transfer/disk costs
