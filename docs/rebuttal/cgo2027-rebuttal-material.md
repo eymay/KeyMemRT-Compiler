@@ -263,6 +263,22 @@ targets).
   events in `drivers/client_driver.cpp:259-322`, needs to be added around
   the `DeserializeEvalAutomorphismKey` call to separate file-read from
   deserialization time.
+- **Page-cache check from already-recorded data (E)**: all three drivers
+  construct `ResourceMonitor(true)` (`client_driver.cpp:189`,
+  `main_driver.cpp:121`, `server_runner.cpp:97`), i.e. advanced stats were
+  ON for every recorded run — each `*_basic.csv` in `build/results` already
+  contains `RAM_Cached_GB`, `RAM_Buffers_GB`, `Pages_In/Out`, and
+  `Minor/Major_Faults` columns. Whether key reads were served from the OS
+  block cache or from disk can therefore be determined by *analyzing
+  existing result files*, no new runs needed: page-cache-served loads show
+  flat `Pages_In` and near-zero major faults with high `RAM_Cached_GB`;
+  disk-served loads show `Pages_In` stepping with each key load. Two honest
+  caveats to check in that data: (a) the runtime reads keys with plain
+  `std::ifstream` — no `O_DIRECT`/`posix_fadvise` anywhere — so the page
+  cache is never bypassed; (b) the Justfile run targets invoke
+  `make <network>-generate-keys-*` immediately before the server run
+  (`Justfile:199` etc.), so freshly (re)generated key files enter the run
+  warm in the cache from their own writes.
 
 ### 2.5 Bootstrap removal and its correctness (C7)
 
